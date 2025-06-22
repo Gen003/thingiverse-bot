@@ -2,10 +2,16 @@ services:
   - type: web
     name: thingiverse-bot
     env: python
-    buildCommand: ""
+    runtime: python
+    plan: free
+    branch: main
+    buildCommand: "pip install -r requirements.txt"
     startCommand: "python main.py"
     envVars:
+      # تُضبط قيم هذه المتغيّرات في لوحة Render وليس داخل yaml
       - key: BOT_TOKEN
-        value: ${BOT_TOKEN}
+        sync: false
       - key: CHAT_ID
-        value: ${CHAT_ID}
+        sync: false
+      - key: APP_TOKEN
+        sync: false
