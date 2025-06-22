@@ -1,101 +1,108 @@
 # -*- coding: utf-8 -*-
 """
-Thingiverse → Telegram bot (image + title + download link)   ©2025
-إعداد: د. إيرك
+Thingiverse → Telegram  ❚  د. إيرك 2025
+يرسل أحدث تصميم (صورة + زرين View / Download) كل دقيقتين.
 """
-import os
-import time
+
+import os, time, json, traceback
 from datetime import datetime
 from threading import Thread
 
-import cloudscraper            # لتجاوز Cloudflare
+import cloudscraper          # ↯ bypass Cloudflare
 import requests
 from flask import Flask
 
-# === متغيّرات البيئة ===
-BOT_TOKEN   = os.getenv("BOT_TOKEN")
-CHAT_ID     = os.getenv("CHAT_ID")
-APP_TOKEN   = os.getenv("APP_TOKEN")
+# ───── متغيّرات البيئة ─────
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID   = os.getenv("CHAT_ID")          # مثال ‎-1002512279850‎
+APP_TOKEN = os.getenv("APP_TOKEN")        # Thingiverse App Token
 
-if not all([BOT_TOKEN, CHAT_ID, APP_TOKEN]):
-    raise ValueError("⚠️ تأكّد من تعريف BOT_TOKEN و CHAT_ID و APP_TOKEN في لوحة Render")
+assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN must be set!"
 
-# === Flask (لإبقاء الخدمة حية على Render) ===
+# ───── Flask للإبقاء على الخدمة حية ─────
 app = Flask(__name__)
-
 @app.route("/")
 def index():
-    return "✅ Thingiverse-Bot is up."
+    return "✅ Thingiverse-Bot is running."
 
-# === أداة طلبات تتجاوز Cloudflare ===
+# ───── أداة طلبات تتجاوز Cloudflare ─────
 scraper = cloudscraper.create_scraper(
     browser={"browser": "firefox", "platform": "linux", "desktop": True}
 )
 
-# === إرسال رسالة/صورة إلى تيليجرام ===
-def telegram_send_photo(photo_url: str, caption: str):
-    api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-    payload = {"chat_id": CHAT_ID, "photo": photo_url, "caption": caption}
-    scraper.post(api, data=payload, timeout=10)
+# ───── Telegram helpers ─────
+TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-def telegram_send_text(text: str):
-    api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {"chat_id": CHAT_ID, "text": text}
-    scraper.post(api, data=payload, timeout=10)
+def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
+    kb = {
+        "inline_keyboard": [
+            [
+                {"text": "🔗 View on Thingiverse", "url": view_url},
+                {"text": "⬇️ Download STL",       "url": dl_url},
+            ]
+        ]
+    }
+    payload = {
+        "chat_id": CHAT_ID,
+        "photo":   photo_url,
+        "caption": caption,
+        "reply_markup": json.dumps(kb, ensure_ascii=False)
+    }
+    scraper.post(f"{TG_ROOT}/sendPhoto", data=payload, timeout=15)
 
-# === جلب أحدث تصميم من Thingiverse ===
-last_id = None                 # لتجنّب التكرار
+def tg_text(txt: str):
+    scraper.post(f"{TG_ROOT}/sendMessage", data={"chat_id": CHAT_ID, "text": txt}, timeout=10)
 
-def fetch_and_send():
-    global last_id
-    api = "https://api.thingiverse.com/newest/things"
-    params = {"access_token": APP_TOKEN}
+# ───── Thingiverse helpers ─────
+API_ROOT = "https://api.thingiverse.com"
+last_id  = None
 
-    try:
-        r = scraper.get(api, params=params, timeout=15)
-        r.raise_for_status()            # HTTP ≠ 200 يرفع-استثناء
-        data = r.json()                 # لو HTML سيُرمى استثناء ويُلتقط بالأسفل
+def newest_thing():
+    """ارجع JSON لأحدث تصميم، أو None."""
+    url = f"{API_ROOT}/newest/things"
+    r = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=20)
+    r.raise_for_status()
+    data = r.json() if r.headers.get("content-type","").startswith("application/json") else None
+    if not data:
+        raise ValueError("HTML response (Cloudflare).")
+    return data[0] if isinstance(data, list) and data else None
 
-        # أحياناً تُعاد قائمة مباشرة أو تحت مفتاح hits
-        things = data.get("hits") if isinstance(data, dict) else data
-        if not things:
-            telegram_send_text("⚠️ لا تصميمات جديدة حاليًا.")
-            return
+def first_file_id(thing_id: int):
+    url = f"{API_ROOT}/things/{thing_id}/files"
+    r   = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=20)
+    r.raise_for_status()
+    files = r.json()
+    return files[0]["id"] if isinstance(files, list) and files else None
 
-        thing = things[0]
-        thing_id     = thing.get("id")
-        if thing_id == last_id:
-            return  # نفس العنصر السابق
-
-        last_id      = thing_id
-        title        = thing.get("name", "No title")
-        public_url   = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing_id}"
-        thumb_url    = thing.get("thumbnail")  or thing.get("preview_image")
-
-        # رابط مباشر لتحميل ملف STL الأول إن وُجد
-        # (مجرّد إضافة /download في العادة)
-        download_url = f"https://www.thingiverse.com/download:{thing_id}"
-
-        caption = f"📦 {title}\n🔗 {download_url}"
-
-        if thumb_url:
-            telegram_send_photo(thumb_url, caption)
-        else:
-            telegram_send_text(caption)
-
-    except Exception as e:
-        telegram_send_text(f"❌ خطأ في جلب التصميمات: {e}")
-        print("❌", e)
-
-# === حلقة العمل الخلفية ===
+# ───── حلقة العمل ─────
 def worker():
+    global last_id
     while True:
-        fetch_and_send()
-        now = datetime.now().strftime("%H:%M:%S")
-        telegram_send_text(f"🤖 البوت حي - {now}")     # Ping
-        time.sleep(120)    # كل دقيقتين
+        try:
+            thing = newest_thing()
+            if thing and thing["id"] != last_id:
+                last_id = thing["id"]
 
-# === تشغيل ===
+                title      = thing.get("name","Thing")
+                pub_url    = thing.get("public_url") or f"https://www.thingiverse.com/thing:{last_id}"
+                thumb      = thing.get("thumbnail")  or thing.get("preview_image") or ""
+                file_id    = first_file_id(last_id)
+                dl_url     = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
+
+                caption = f"📦 {title}"
+                tg_photo(thumb, caption, pub_url, dl_url)
+
+        except Exception as e:
+            # طباعة المسار للمشاهدة فى اللوج فقط
+            print("⚠️", traceback.format_exc(limit=1))
+            tg_text(f"❌ خطأ في جلب التصميمات:\n{e}")
+
+        # رسالة نبض كل دقيقتين
+        now = datetime.now().strftime("%H:%M:%S")
+        tg_text(f"🤖 البوت حي - {now}")
+        time.sleep(120)
+
+# ───── تشغيل ─────
 if __name__ == "__main__":
     Thread(target=worker, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
