@@ -99,7 +99,7 @@ def worker():
 
         # رسالة نبض كل دقيقتين
         now = datetime.now().strftime("%H:%M:%S")
-        tg_text(f"🤖 البوت حي - {now}")
+        tg_text(f"🤖 new update coming - {now}")
         time.sleep(120)
 
 # ───── تشغيل ─────
