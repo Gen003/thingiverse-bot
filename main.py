@@ -1,56 +1,101 @@
-import os import time import cloudscraper  # للتغلب على حماية Cloudflare from flask import Flask from threading import Thread from datetime import datetime
+# -*- coding: utf-8 -*-
+"""
+Thingiverse → Telegram bot (image + title + download link)   ©2025
+إعداد: د. إيرك
+"""
+import os
+import time
+from datetime import datetime
+from threading import Thread
 
-app = Flask(name)
+import cloudscraper            # لتجاوز Cloudflare
+import requests
+from flask import Flask
 
-BOT_TOKEN = os.getenv("BOT_TOKEN") CHAT_ID = os.getenv("CHAT_ID") APP_TOKEN = os.getenv("APP_TOKEN")
+# === متغيّرات البيئة ===
+BOT_TOKEN   = os.getenv("BOT_TOKEN")
+CHAT_ID     = os.getenv("CHAT_ID")
+APP_TOKEN   = os.getenv("APP_TOKEN")
 
-نص ثابت للتأكد أن البوت حي
+if not all([BOT_TOKEN, CHAT_ID, APP_TOKEN]):
+    raise ValueError("⚠️ تأكّد من تعريف BOT_TOKEN و CHAT_ID و APP_TOKEN في لوحة Render")
 
-ALIVE_TEXT = "🤖 البوت حي"
+# === Flask (لإبقاء الخدمة حية على Render) ===
+app = Flask(__name__)
 
-Scraper خاص يتجاوز Cloudflare تلقائياً
+@app.route("/")
+def index():
+    return "✅ Thingiverse-Bot is up."
 
-scraper = cloudscraper.create_scraper(browser={ 'browser': 'firefox', 'platform': 'linux', 'desktop': True })
+# === أداة طلبات تتجاوز Cloudflare ===
+scraper = cloudscraper.create_scraper(
+    browser={"browser": "firefox", "platform": "linux", "desktop": True}
+)
 
-def send_telegram_message(text: str): """إرسال رسالة نصية إلى تيليجرام""" if not (BOT_TOKEN and CHAT_ID): print("⚠️ BOT_TOKEN أو CHAT_ID غير معرفين!") return url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage" payload = {"chat_id": CHAT_ID, "text": text} try: scraper.post(url, data=payload, timeout=10) except Exception as e: print("❌ Error sending message:", e)
+# === إرسال رسالة/صورة إلى تيليجرام ===
+def telegram_send_photo(photo_url: str, caption: str):
+    api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+    payload = {"chat_id": CHAT_ID, "photo": photo_url, "caption": caption}
+    scraper.post(api, data=payload, timeout=10)
 
-def fetch_latest_design(): """جلب أحدث تصميم منشور على Thingiverse""" api_url = "https://api.thingiverse.com/newest/things" params = {"access_token": APP_TOKEN}
+def telegram_send_text(text: str):
+    api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {"chat_id": CHAT_ID, "text": text}
+    scraper.post(api, data=payload, timeout=10)
 
-try:
-    r = scraper.get(api_url, params=params, timeout=15)
-    if r.status_code != 200:
-        raise ValueError(f"HTTP {r.status_code}")
+# === جلب أحدث تصميم من Thingiverse ===
+last_id = None                 # لتجنّب التكرار
 
-    data = r.json()  # قد يرمي استثناء إذا عاد نص HTML
+def fetch_and_send():
+    global last_id
+    api = "https://api.thingiverse.com/newest/things"
+    params = {"access_token": APP_TOKEN}
 
-    # Thingiverse يُرجع قائمة باسم "hits" أو مباشرة قائمة أشياء
-    things = data.get("hits") or data
-    if not things:
-        print("⚠️ لا توجد عناصر في الرد.")
-        return
+    try:
+        r = scraper.get(api, params=params, timeout=15)
+        r.raise_for_status()            # HTTP ≠ 200 يرفع-استثناء
+        data = r.json()                 # لو HTML سيُرمى استثناء ويُلتقط بالأسفل
 
-    thing = things[0]
-    title = thing.get("name", "No title")
-    public_url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing.get('id') }"
-    thumb = thing.get("thumbnail") or thing.get("preview_image")
+        # أحياناً تُعاد قائمة مباشرة أو تحت مفتاح hits
+        things = data.get("hits") if isinstance(data, dict) else data
+        if not things:
+            telegram_send_text("⚠️ لا تصميمات جديدة حاليًا.")
+            return
 
-    msg = f"📦 {title}\n🔗 {public_url}"
-    if thumb:
-        # نرسل الصورة أولاً ثم العنوان كرابط (نستخدم sendPhoto)
-        photo_url = thumb
-        photo_api = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-        payload = {"chat_id": CHAT_ID, "photo": photo_url, "caption": msg}
-        scraper.post(photo_api, data=payload, timeout=10)
-    else:
-        send_telegram_message(msg)
+        thing = things[0]
+        thing_id     = thing.get("id")
+        if thing_id == last_id:
+            return  # نفس العنصر السابق
 
-except Exception as e:
-    print("❌ Error fetching from Thingiverse:", e)
-    send_telegram_message(f"❌ خطأ في جلب التصميمات: {e}")
+        last_id      = thing_id
+        title        = thing.get("name", "No title")
+        public_url   = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing_id}"
+        thumb_url    = thing.get("thumbnail")  or thing.get("preview_image")
 
-def worker(): """حَلْقة لا نهائية: كل دقيقة يحاول جلب أحدث تصميم ويرسل Alive-ping.""" while True: fetch_latest_design() # Ping حيّ للتأكد أن البوت يعمل now = datetime.now().strftime("%H:%M:%S") send_telegram_message(f"{ALIVE_TEXT} - {now}") time.sleep(60)
+        # رابط مباشر لتحميل ملف STL الأول إن وُجد
+        # (مجرّد إضافة /download في العادة)
+        download_url = f"https://www.thingiverse.com/download:{thing_id}"
 
-@app.route("/") def index(): return "✅ Thingiverse Bot is running."
+        caption = f"📦 {title}\n🔗 {download_url}"
 
-if name == "main": # بدء الخيط الخلفي Thread(target=worker, daemon=True).start() # تشغيل Flask app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
+        if thumb_url:
+            telegram_send_photo(thumb_url, caption)
+        else:
+            telegram_send_text(caption)
 
+    except Exception as e:
+        telegram_send_text(f"❌ خطأ في جلب التصميمات: {e}")
+        print("❌", e)
+
+# === حلقة العمل الخلفية ===
+def worker():
+    while True:
+        fetch_and_send()
+        now = datetime.now().strftime("%H:%M:%S")
+        telegram_send_text(f"🤖 البوت حي - {now}")     # Ping
+        time.sleep(120)    # كل دقيقتين
+
+# === تشغيل ===
+if __name__ == "__main__":
+    Thread(target=worker, daemon=True).start()
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", 10000)))
