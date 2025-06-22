@@ -3,46 +3,46 @@ import time
 import requests
 from flask import Flask
 from threading import Thread
-from datetime import datetime
 
 app = Flask(__name__)
 
-def send_telegram_message(text):
-    bot_token = os.getenv("BOT_TOKEN")
-    chat_id = os.getenv("CHAT_ID")
-    if bot_token and chat_id:
-        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
-        payload = {"chat_id": chat_id, "text": text}
-        try:
-            response = requests.post(url, data=payload)
-            if response.status_code != 200:
-                print(f"⚠️ Failed to send message. Code: {response.status_code}")
-                print(response.text)
-            else:
-                print(f"✅ Message sent at {datetime.now().strftime('%H:%M:%S')}")
-        except Exception as e:
-            print("❌ Exception:", e)
-    else:
-        print("❌ BOT_TOKEN or CHAT_ID missing")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+APP_TOKEN = os.getenv("APP_TOKEN")
 
-def heartbeat_loop():
+def send_telegram_message(text, image_url=None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto" if image_url else f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "caption": text if image_url else None,
+        "text": text if not image_url else None,
+        "photo": image_url if image_url else None
+    }
+    requests.post(url, data=payload)
+
+def fetch_and_send_latest():
+    sent_ids = set()
     while True:
-        now = datetime.now().strftime("%H:%M:%S")
-        send_telegram_message(f"🤖 البوت حي - {now}")
-        time.sleep(60)
+        try:
+            res = requests.get(f"https://api.thingiverse.com/newest/things?access_token={APP_TOKEN}")
+            things = res.json().get("hits", [])
+            for thing in things:
+                if thing["id"] not in sent_ids:
+                    title = thing["name"]
+                    url = thing["public_url"]
+                    image = thing["thumbnail"]
+                    message = f"🆕 *{title}*\n🔗 {url}"
+                    send_telegram_message(message, image)
+                    sent_ids.add(thing["id"])
+            time.sleep(60)
+        except Exception as e:
+            print("❌ Error:", e)
+            time.sleep(60)
 
 @app.route('/')
 def home():
-    return "✅ Thingiverse Bot is running."
-
-# ✅ نشغّل الخيط مباشرة هنا
-def start_heartbeat():
-    print("🧠 Starting heartbeat thread")
-    t = Thread(target=heartbeat_loop)
-    t.daemon = True
-    t.start()
+    return "✅ Thingiverse Auto Bot Running"
 
 if __name__ == "__main__":
-    print("🚀 Launching bot service")
-    start_heartbeat()
+    Thread(target=fetch_and_send_latest).start()
     app.run(host="0.0.0.0", port=10000)
