@@ -18,16 +18,24 @@ def send_telegram_message(text):
         url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
         payload = {"chat_id": chat_id, "text": text}
         try:
-            requests.post(url, data=payload)
+            response = requests.post(url, data=payload)
+            if response.status_code != 200:
+                print(f"⚠️ Failed to send message. Status code: {response.status_code}")
+                print(f"Response: {response.text}")
+            else:
+                print(f"✅ Message sent at {datetime.now().strftime('%H:%M:%S')}")
         except Exception as e:
             print("❌ Error sending message:", e)
+    else:
+        print("❌ BOT_TOKEN or CHAT_ID not set")
 
 def heartbeat():
     while True:
         now = datetime.now().strftime("%H:%M:%S")
         send_telegram_message(f"🤖 البوت حي - {now}")
-        time.sleep(60)  # كل 60 ثانية
+        time.sleep(60)
 
 if __name__ == "__main__":
+    print("🚀 Starting Thingiverse Bot...")
     Thread(target=heartbeat).start()
     app.run(host="0.0.0.0", port=10000)
