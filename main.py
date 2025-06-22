@@ -7,10 +7,6 @@ from datetime import datetime
 
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "✅ Thingiverse Bot is running."
-
 def send_telegram_message(text):
     bot_token = os.getenv("BOT_TOKEN")
     chat_id = os.getenv("CHAT_ID")
@@ -20,22 +16,32 @@ def send_telegram_message(text):
         try:
             response = requests.post(url, data=payload)
             if response.status_code != 200:
-                print(f"⚠️ Failed to send message. Status code: {response.status_code}")
-                print(f"Response: {response.text}")
+                print(f"⚠️ Failed to send message. Code: {response.status_code}")
+                print(response.text)
             else:
                 print(f"✅ Message sent at {datetime.now().strftime('%H:%M:%S')}")
         except Exception as e:
-            print("❌ Error sending message:", e)
+            print("❌ Exception:", e)
     else:
-        print("❌ BOT_TOKEN or CHAT_ID not set")
+        print("❌ BOT_TOKEN or CHAT_ID missing")
 
-def heartbeat():
+def heartbeat_loop():
     while True:
         now = datetime.now().strftime("%H:%M:%S")
         send_telegram_message(f"🤖 البوت حي - {now}")
         time.sleep(60)
 
+@app.before_first_request
+def activate_job():
+    print("🧠 Starting heartbeat thread")
+    thread = Thread(target=heartbeat_loop)
+    thread.daemon = True
+    thread.start()
+
+@app.route('/')
+def home():
+    return "✅ Thingiverse Bot is running."
+
 if __name__ == "__main__":
-    print("🚀 Starting Thingiverse Bot...")
-    Thread(target=heartbeat).start()
+    print("🚀 Launching bot service")
     app.run(host="0.0.0.0", port=10000)
