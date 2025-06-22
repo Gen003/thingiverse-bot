@@ -1,48 +1,46 @@
 import os
-import time
 import requests
-from flask import Flask
-from threading import Thread
-
-app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 APP_TOKEN = os.getenv("APP_TOKEN")
 
 def send_telegram_message(text, image_url=None):
-    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto" if image_url else f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-    payload = {
-        "chat_id": CHAT_ID,
-        "caption": text if image_url else None,
-        "text": text if not image_url else None,
-        "photo": image_url if image_url else None
-    }
-    requests.post(url, data=payload)
+    if image_url:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
+        data = {
+            "chat_id": CHAT_ID,
+            "caption": text,
+            "photo": image_url
+        }
+    else:
+        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+        data = {
+            "chat_id": CHAT_ID,
+            "text": text
+        }
+    try:
+        response = requests.post(url, data=data)
+        print("✅ Telegram Response:", response.status_code, response.text)
+    except Exception as e:
+        print("❌ Error sending to Telegram:", e)
 
-def fetch_and_send_latest():
-    sent_ids = set()
-    while True:
-        try:
-            res = requests.get(f"https://api.thingiverse.com/newest/things?access_token={APP_TOKEN}")
-            things = res.json().get("hits", [])
-            for thing in things:
-                if thing["id"] not in sent_ids:
-                    title = thing["name"]
-                    url = thing["public_url"]
-                    image = thing["thumbnail"]
-                    message = f"🆕 *{title}*\n🔗 {url}"
-                    send_telegram_message(message, image)
-                    sent_ids.add(thing["id"])
-            time.sleep(60)
-        except Exception as e:
-            print("❌ Error:", e)
-            time.sleep(60)
+def fetch_latest_design():
+    url = f"https://api.thingiverse.com/newest/things?access_token={APP_TOKEN}"
+    try:
+        response = requests.get(url)
+        data = response.json()
+        if "hits" in data and len(data["hits"]) > 0:
+            first = data["hits"][0]
+            name = first.get("name")
+            public_url = first.get("public_url")
+            thumbnail = first.get("thumbnail")
+            msg = f"🆕 {name}\n🔗 {public_url}"
+            send_telegram_message(msg, image_url=thumbnail)
+        else:
+            send_telegram_message("⚠️ لا توجد تصميمات جديدة.")
+    except Exception as e:
+        print("❌ Error fetching from Thingiverse:", e)
 
-@app.route('/')
-def home():
-    return "✅ Thingiverse Auto Bot Running"
-
-if __name__ == "__main__":
-    Thread(target=fetch_and_send_latest).start()
-    app.run(host="0.0.0.0", port=10000)
+# run once for test
+fetch_latest_design()
