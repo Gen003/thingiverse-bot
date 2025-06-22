@@ -4,9 +4,8 @@ services:
     env: python
     buildCommand: ""
     startCommand: "python main.py"
-    autoDeploy: true
     envVars:
       - key: BOT_TOKEN
-        fromEnvVar: BOT_TOKEN
+        value: ${BOT_TOKEN}
       - key: CHAT_ID
-        fromEnvVar: CHAT_ID
+        value: ${CHAT_ID}
