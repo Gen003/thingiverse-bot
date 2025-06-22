@@ -1,57 +1,43 @@
-import requests
-import time
 import os
-import telegram
+import time
+import requests
 from flask import Flask
+from threading import Thread
 
-# إعداد التوكن ومعرف القناة
-TOKEN = os.getenv("BOT_TOKEN")
-CHAT_ID = os.getenv("CHAT_ID")
-
-bot = telegram.Bot(token=TOKEN)
 app = Flask(__name__)
 
-# تخزين آخر معرف منشور
-last_id = None
-
-def fetch_latest():
-    global last_id
-    url = "https://www.thingiverse.com/search/page:1/type:things"
-    response = requests.get("https://makerworld.com/api/search/models?query=&sort=latest&limit=1")
-    
-    try:
-        data = response.json()
-        item = data['items'][0]
-        thing_id = item['id']
-
-        if thing_id != last_id:
-            title = item['name']
-            link = f"https://makerworld.com/en/models/{thing_id}"
-            image_url = item['thumbnail']['url']
-            message = f"🆕 فكرة جديدة:\n\n{title}\n\n🔗 {link}"
-
-            # تحميل الصورة مؤقتاً ثم إرسالها
-            image_data = requests.get(image_url).content
-            with open("temp.jpg", "wb") as f:
-                f.write(image_data)
-            
-            with open("temp.jpg", "rb") as f:
-                bot.send_photo(chat_id=CHAT_ID, photo=f, caption=message)
-
-            last_id = thing_id
-    except Exception as e:
-        print("❌ Error:", e)
-
+# للتأكد أن البوت يعمل على Render
 @app.route('/')
 def home():
-    return "Bot is alive!"
+    return "Thingiverse Bot is running!"
 
+# إرسال رسالة تيليجرام
+def send_telegram_message(text):
+    bot_token = os.getenv("BOT_TOKEN")
+    chat_id = os.getenv("CHAT_ID")
+    if bot_token and chat_id:
+        url = f"https://api.telegram.org/bot{bot_token}/sendMessage"
+        payload = {"chat_id": chat_id, "text": text}
+        requests.post(url, data=payload)
+
+# المهمة الرئيسية
 def run_bot():
     while True:
-        fetch_latest()
-        time.sleep(300)  # كل 5 دقائق
+        try:
+            # أرسل فكرة جديدة كل 5 دقائق (عدّل كما تشاء)
+            send_telegram_message("🛠️ فكرة جديدة: https://www.thingiverse.com/explore/newest")
+            time.sleep(300)
+        except Exception as e:
+            print("خطأ:", e)
+            time.sleep(60)
 
+# تشغيل المهمة في الخلفية
+def run_thread():
+    thread = Thread(target=run_bot)
+    thread.daemon = True
+    thread.start()
+
+# بدأ كل شيء
 if __name__ == "__main__":
-    import threading
-    threading.Thread(target=run_bot).start()
-    app.run(host="0.0.0.0", port=10000)
+    run_thread()
+    app.run(host="0.0.0.0", port=int(os.environ.get("PORT", 8080)))
