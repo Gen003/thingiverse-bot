@@ -2,11 +2,11 @@ services:
   - type: web
     name: thingiverse-bot
     env: python
-    plan: free
-    buildCommand: "pip install -r requirements.txt"
+    buildCommand: ""
     startCommand: "python main.py"
+    autoDeploy: true
     envVars:
       - key: BOT_TOKEN
-        sync: false
+        fromEnvVar: BOT_TOKEN
       - key: CHAT_ID
-        sync: false
+        fromEnvVar: CHAT_ID
