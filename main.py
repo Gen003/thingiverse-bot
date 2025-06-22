@@ -1,46 +1,54 @@
 import os
+import time
 import requests
+from flask import Flask
+from threading import Thread
+from datetime import datetime
+
+app = Flask(__name__)
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID = os.getenv("CHAT_ID")
 APP_TOKEN = os.getenv("APP_TOKEN")
 
-def send_telegram_message(text, image_url=None):
-    if image_url:
-        url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto"
-        data = {
-            "chat_id": CHAT_ID,
-            "caption": text,
-            "photo": image_url
-        }
-    else:
+@app.route('/')
+def home():
+    return "✅ Thingiverse Bot is running."
+
+def send_telegram_message(text):
+    if BOT_TOKEN and CHAT_ID:
         url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
-        data = {
-            "chat_id": CHAT_ID,
-            "text": text
-        }
-    try:
-        response = requests.post(url, data=data)
-        print("✅ Telegram Response:", response.status_code, response.text)
-    except Exception as e:
-        print("❌ Error sending to Telegram:", e)
+        payload = {"chat_id": CHAT_ID, "text": text}
+        try:
+            requests.post(url, data=payload)
+        except Exception as e:
+            print("❌ Error sending message:", e)
 
 def fetch_latest_design():
     url = f"https://api.thingiverse.com/newest/things?access_token={APP_TOKEN}"
+    headers = {
+        "Accept": "application/json",
+        "User-Agent": "Mozilla/5.0 (compatible; ThingiverseBot/1.0)"
+    }
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
+        print("📥 Raw response:", response.text)  # <-- هام جدًا للطباعة
         data = response.json()
-        if "hits" in data and len(data["hits"]) > 0:
-            first = data["hits"][0]
-            name = first.get("name")
-            public_url = first.get("public_url")
-            thumbnail = first.get("thumbnail")
-            msg = f"🆕 {name}\n🔗 {public_url}"
-            send_telegram_message(msg, image_url=thumbnail)
-        else:
-            send_telegram_message("⚠️ لا توجد تصميمات جديدة.")
+        for item in data.get("hits", []):
+            name = item["name"]
+            url = item["public_url"]
+            image = item["thumbnail"]
+            message = f"📦 {name}\n🔗 {url}\n🖼 {image}"
+            send_telegram_message(message)
+            break  # أرسل فقط أول تصميم
     except Exception as e:
         print("❌ Error fetching from Thingiverse:", e)
 
-# run once for test
-fetch_latest_design()
+def heartbeat():
+    while True:
+        fetch_latest_design()
+        time.sleep(60)
+
+if __name__ == "__main__":
+    Thread(target=heartbeat).start()
+    app.run(host="0.0.0.0", port=10000)
