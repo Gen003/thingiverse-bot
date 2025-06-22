@@ -31,17 +31,18 @@ def heartbeat_loop():
         send_telegram_message(f"🤖 البوت حي - {now}")
         time.sleep(60)
 
-@app.before_first_request
-def activate_job():
-    print("🧠 Starting heartbeat thread")
-    thread = Thread(target=heartbeat_loop)
-    thread.daemon = True
-    thread.start()
-
 @app.route('/')
 def home():
     return "✅ Thingiverse Bot is running."
 
+# ✅ نشغّل الخيط مباشرة هنا
+def start_heartbeat():
+    print("🧠 Starting heartbeat thread")
+    t = Thread(target=heartbeat_loop)
+    t.daemon = True
+    t.start()
+
 if __name__ == "__main__":
     print("🚀 Launching bot service")
+    start_heartbeat()
     app.run(host="0.0.0.0", port=10000)
