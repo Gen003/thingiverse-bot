@@ -2,7 +2,7 @@
 
 """ Thingiverse → Telegram  ❚  د. إيرك 2025
     يرسل أحدث تصميم (صورة + زرين View / Download) كل دقيقتين،
-    بالإضافة إلى أحدث التصاميم من MyMiniFactory, Printables.com, MakerWorld.com
+    بالإضافة إلى أحدث التصاميم من Printables.com و MakerWorld.com
 """
 
 import os, time, json, traceback, requests, xml.etree.ElementTree as ET
@@ -13,13 +13,12 @@ import cloudscraper
 from flask import Flask
 
 # ───── متغيّرات البيئة ─────
-BOT_TOKEN    = os.getenv("BOT_TOKEN")
-CHAT_ID      = os.getenv("CHAT_ID")
-APP_TOKEN    = os.getenv("APP_TOKEN")
-MMF_API_KEY  = os.getenv("MMF_API_KEY")
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID   = os.getenv("CHAT_ID")
+APP_TOKEN = os.getenv("APP_TOKEN")
 
-assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN, MMF_API_KEY]), \
-       "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN / MMF_API_KEY يجب تعيينها!"
+assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), \
+       "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN يجب تعيينها!"
 
 # ───── Flask ─────
 app = Flask(__name__)
@@ -68,7 +67,6 @@ def tg_text(txt: str):
 API_ROOT = "https://api.thingiverse.com"
 last_ids = {
     "thingiverse_newest": None,
-    "mmf":               None,
     "printables":        None,
     "makerworld":        None,
 }
@@ -87,23 +85,6 @@ def first_file_id(thing_id: int):
     files = r.json()
     return files[0]["id"] if isinstance(files, list) and files else None
 
-# ───── MyMiniFactory API (with SSL bypass) ─────
-def newest_mmf():
-    url = "https://api.myminifactory.com/api/v2/objects"
-    try:
-        r = scraper.get(
-            url,
-            params={"apikey": MMF_API_KEY, "order_by": "publish_date", "limit": 1},
-            timeout=20,
-            verify=False      # ← تجاوز التحقق من الشهادة
-        )
-        r.raise_for_status()
-        objs = r.json().get("objects", [])
-        return objs[0] if objs else None
-    except Exception as e:
-        print(f"[MMF Error] {e}")  # يسجل محلياً دون إرسال رسالة خطأ للمستخدم
-        return None
-
 # ───── Printables.com via RSS ─────
 def newest_printables():
     url = "https://www.printables.com/rss"
@@ -116,7 +97,6 @@ def newest_printables():
             return None
         title = item.find("title").text
         link  = item.find("link").text
-        # المصغرة ليست متوفرة في RSS، نتركها فارغة
         return {"id": link, "title": title, "url": link, "thumbnail": ""}
     except Exception as e:
         print(f"[Printables Error] {e}")
@@ -154,16 +134,6 @@ def worker():
                 file_id = first_file_id(thing["id"])
                 dl_url  = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
                 tg_photo(thumb, f"📦 [Thingiverse] {title}", pub_url, dl_url)
-
-            # ——— MyMiniFactory ———
-            mmf = newest_mmf()
-            if mmf and mmf["id"] != last_ids["mmf"]:
-                last_ids["mmf"] = mmf["id"]
-                title   = mmf.get("name", "MMF Object")
-                thumb   = mmf.get("media", [{}])[0].get("thumbnail_url", "")
-                pub_url = mmf.get("url")
-                dl_url  = mmf.get("files", [{}])[0].get("url", pub_url)
-                tg_photo(thumb, f"🌐 [MyMiniFactory] {title}", pub_url, dl_url)
 
             # ——— Printables.com ———
             pp = newest_printables()
