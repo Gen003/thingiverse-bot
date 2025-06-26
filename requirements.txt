@@ -1,1 +1,4 @@
-pip install feedparser python-telegram-bot beautifulsoup4 requests
+feedparser
+python-telegram-bot
+beautifulsoup4
+requests
