@@ -2,9 +2,9 @@
 
 """ Thingiverse → Telegram  ❚  د. إيرك 2025
 يرسل كل نموذج جديد فور رفعه من المنصات التالية:
-- Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
-- Printables.com (جميع العناصر الجديدة من RSS)
-- MakerWorld.com (جميع العناصر الجديدة من RSS)
+#- Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
+#- Printables.com (جميع العناصر الجديدة من RSS)
+#- MakerWorld.com (جميع العناصر الجديدة من RSS)
 مع الحفاظ على الاستقرار دون تغييرات كبيرة.
 """
 
@@ -71,10 +71,10 @@ def safe_send_message(payload, is_photo=False):
     endpoint = "/sendPhoto" if is_photo else "/sendMessage"
     
     with send_lock:
-        # التحكم في معدل الإرسال (رسالة كل 1.5-3 ثوان)
+        # التحكم في معدل الإرسال (رسالة كل 3-5 ثوان)
         elapsed = time.time() - last_send_time
-        if elapsed < 1.5:
-            wait_time = 1.5 + random.uniform(0, 1.5) - elapsed
+        if elapsed < 3:
+            wait_time = 3 + random.uniform(0, 2) - elapsed
             logger.info(f"Rate limiting: Waiting {wait_time:.2f}s")
             time.sleep(wait_time)
         
@@ -87,7 +87,9 @@ def safe_send_message(payload, is_photo=False):
             logger.error(f"Failed to send message: {str(e)}")
             if "Too Many Requests" in str(e):
                 # إذا كان الخطأ 429، ننتظر فترة أطول
-                time.sleep(10)
+                wait_time = 30 + random.randint(0, 30)
+                logger.warning(f"Too Many Requests! Waiting {wait_time}s")
+                time.sleep(wait_time)
             return False
 
 def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
@@ -207,7 +209,7 @@ def fetch_makerworld_items():
         logger.error(f"MakerWorld RSS error: {str(e)}")
         return []
 
-#────ـ العامل الرئيسي مع تحكم بمعدل الإرسال ─────
+#────ـ العامل الرئيسي مع إرسال عنصر واحد فقط في الدورة ─────
 
 def worker():
     init_db()
@@ -215,11 +217,11 @@ def worker():
     
     # تهيئة معدل الإرسال
     global last_send_time
-    last_send_time = time.time() - 2  # السماح بالإرسال الفوري
+    last_send_time = time.time() - 3  # السماح بالإرسال الفوري
     
     while True:
         try:
-            # Thingiverse
+            # Thingiverse - عنصر واحد فقط
             try:
                 last_thingiverse = get_last_id("thingiverse_newest")
                 things = newest_thingiverse()
@@ -232,24 +234,27 @@ def worker():
                         new_items.append(thing)
                     
                     if new_items:
-                        logger.info(f"Found {len(new_items)} new Thingiverse items")
-                        # إرسال من الأقدم للأحدث لتجنب التحميل الزائد
-                        for thing in new_items:
-                            title   = thing.get("name", "Thing")
-                            pub_url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing['id']}"
-                            thumb   = thing.get("thumbnail") or thing.get("preview_image") or ""
-                            file_id = first_file_id(thing["id"])
-                            dl_url  = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
-                            tg_photo(thumb, f"📦 <b>[Thingiverse]</b> {title}", pub_url, dl_url)
+                        # إرسال أقدم عنصر جديد فقط (واحد فقط)
+                        thing = new_items[-1]  # أقدم عنصر
+                        title   = thing.get("name", "Thing")
+                        pub_url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing['id']}"
+                        thumb   = thing.get("thumbnail") or thing.get("preview_image") or ""
+                        file_id = first_file_id(thing["id"])
+                        dl_url  = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
+                        tg_photo(thumb, f"📦 <b>[Thingiverse]</b> {title}", pub_url, dl_url)
                         
-                        set_last_id("thingiverse_newest", str(new_items[0]["id"]))
+                        # تحديث آخر معرف للأحدث
+                        set_last_id("thingiverse_newest", str(things[0]["id"]))
+                        logger.info(f"Sent 1 new Thingiverse item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في Thingiverse: {str(e)}"
                 logger.error(error_msg)
-                tg_text(error_msg[:4000])
                 time.sleep(5)
             
-            # Printables
+            # الانتظار قبل المصدر التالي
+            time.sleep(10 + random.randint(0, 10))
+            
+            # Printables - عنصر واحد فقط
             try:
                 last_printables = get_last_id("printables")
                 items = fetch_printables_items()
@@ -263,21 +268,24 @@ def worker():
                         new_items.append(item)
                     
                     if new_items:
-                        logger.info(f"Found {len(new_items)} new Printables items")
-                        # إرسال من الأقدم للأحدث
-                        for item in new_items:
-                            title = item.find("title").text
-                            link  = item.find("link").text
-                            tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{link}\">{title}</a>")
+                        # إرسال أقدم عنصر جديد فقط (واحد فقط)
+                        item = new_items[-1]  # أقدم عنصر
+                        title = item.find("title").text
+                        link  = item.find("link").text
+                        tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{link}\">{title}</a>")
                         
+                        # تحديث آخر معرف للأحدث
                         set_last_id("printables", new_items[0].find("link").text)
+                        logger.info(f"Sent 1 new Printables item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في Printables: {str(e)}"
                 logger.error(error_msg)
-                tg_text(error_msg[:4000])
                 time.sleep(5)
             
-            # MakerWorld
+            # الانتظار قبل المصدر التالي
+            time.sleep(10 + random.randint(0, 10))
+            
+            # MakerWorld - عنصر واحد فقط
             try:
                 last_makerworld = get_last_id("makerworld")
                 items = fetch_makerworld_items()
@@ -291,28 +299,27 @@ def worker():
                         new_items.append(item)
                     
                     if new_items:
-                        logger.info(f"Found {len(new_items)} new MakerWorld items")
-                        # إرسال من الأقدم للأحدث
-                        for item in new_items:
-                            title = item.find("title").text
-                            link  = item.find("link").text
-                            tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{link}\">{title}</a>")
+                        # إرسال أقدم عنصر جديد فقط (واحد فقط)
+                        item = new_items[-1]  # أقدم عنصر
+                        title = item.find("title").text
+                        link  = item.find("link").text
+                        tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{link}\">{title}</a>")
                         
+                        # تحديث آخر معرف للأحدث
                         set_last_id("makerworld", new_items[0].find("link").text)
+                        logger.info(f"Sent 1 new MakerWorld item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في MakerWorld: {str(e)}"
                 logger.error(error_msg)
-                tg_text(error_msg[:4000])
                 time.sleep(5)
         
         except Exception as e:
             error_msg = f"❌ خطأ غير متوقع: {str(e)}"
             logger.error(error_msg)
-            tg_text(error_msg[:4000])
             time.sleep(30)
         
         logger.info("Cycle completed. Sleeping...")
-        time.sleep(180 + random.randint(0, 60))  # فحص كل 3-4 دقائق بشكل عشوائي
+        time.sleep(300 + random.randint(0, 120))  # فحص كل 5-7 دقائق بشكل عشوائي
 
 #────ـ تشغيل مقدّس ─────
 
