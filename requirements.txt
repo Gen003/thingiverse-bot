@@ -1,6 +1,6 @@
-flask
 python-telegram-bot
-requests
-cloudscraper
-beautifulsoup4
-selenium
+flask==3.0.3
+requests==2.32.3
+beautifulsoup4==4.12.3
+selenium==4.21.0
+webdriver_manager==4.0.1
