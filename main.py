@@ -1,4 +1,7 @@
-import feedparser import cloudscraper from bs4 import BeautifulSoup from telegram import Bot import asyncio
+import feedparser 
+import cloudscraper from bs4 
+import BeautifulSoup from telegram 
+import Bot import asyncio
 
 إعداد التوكن وID القناة
 
