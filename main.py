@@ -1,122 +1,125 @@
-#!/usr/bin/env python3
-# -*- coding: utf-8 -*-
-# Main bot file: monitors several 3D-model repositories and pushes new items to Telegram
+# إعادة كتابة الكود مع ضمان خلوّه من الأخطاء النحوية لتشغيل بوت Telegram يجلب تصاميم جديدة من Thingiverse ومصادر أخرى
 
+code = """
 import os
 import time
-import os import time import json import pickle import traceback from threading import Thread
+import json
+import pickle
+import traceback
+import requests
+import feedparser
+from threading import Thread
+from flask import Flask
 
-import requests import cloudscraper from bs4 import BeautifulSoup from flask import Flask
+# ───────── إعداد البيئة ─────────
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID = os.getenv("CHAT_ID")
+THINGIVERSE_TOKEN = os.getenv("APP_TOKEN")
 
-#--- required environment variables ---
+assert all([BOT_TOKEN, CHAT_ID]), "❌ تأكد من ضبط متغيرات البيئة BOT_TOKEN و CHAT_ID"
 
-BOT_TOKEN = os.getenv("BOT_TOKEN")          # Telegram bot token CHAT_ID   = os.getenv("CHAT_ID")            # Telegram chat/channel id (use negative id for channels) APP_TOKEN = os.getenv("APP_TOKEN")          # Thingiverse API token (optional but recommended) PORT      = int(os.getenv("PORT", "10000")) SELF_URL  = os.getenv("SELF_URL")           # public url for keep‑alive (optional)
+# ───────── إرسال رسالة إلى Telegram ─────────
+def send_to_telegram(text, image_url=None, buttons=None):
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/sendPhoto" if image_url else f"https://api.telegram.org/bot{BOT_TOKEN}/sendMessage"
+    payload = {
+        "chat_id": CHAT_ID,
+        "caption": text,
+        "parse_mode": "HTML"
+    } if image_url else {
+        "chat_id": CHAT_ID,
+        "text": text,
+        "parse_mode": "HTML"
+    }
 
-if not BOT_TOKEN or not CHAT_ID: raise SystemExit("BOT_TOKEN and CHAT_ID must be set")
+    if image_url:
+        payload["photo"] = image_url
 
-# --- flask app for keep-alive ---
+    if buttons:
+        payload["reply_markup"] = json.dumps({"inline_keyboard": [[btn] for btn in buttons]})
 
+    try:
+        requests.post(url, data=payload)
+    except Exception as e:
+        print(f"[Telegram Error] {e}")
 
-app = Flask(name) @app.route("/") def index(): return "ok"
+# ───────── حفظ / تحميل آخر العناصر ─────────
+def load_last_ids():
+    if os.path.exists("last_ids.pkl"):
+        with open("last_ids.pkl", "rb") as f:
+            return pickle.load(f)
+    return {}
 
-if SELF_URL: def keep_alive(): while True: try: requests.get(SELF_URL, timeout=10) except Exception: pass time.sleep(240)
+def save_last_ids(data):
+    with open("last_ids.pkl", "wb") as f:
+        pickle.dump(data, f)
 
-#--- http sessions ---
+# ───────── Thingiverse API ─────────
+def fetch_thingiverse(last_ids):
+    try:
+        headers = {"Authorization": f"Bearer {THINGIVERSE_TOKEN}"}
+        r = requests.get("https://api.thingiverse.com/newest", headers=headers)
+        items = r.json()
+        if not isinstance(items, list):
+            return
+        for item in items:
+            thing_id = str(item["id"])
+            if last_ids.get("thingiverse") == thing_id:
+                break
+            title = item["name"]
+            img = item["thumbnail"]
+            link = item["public_url"]
+            send_to_telegram(f"📦 <b>{title}</b>", img, [[{"text": "🔗 View", "url": link}]])
+            last_ids["thingiverse"] = thing_id
+            save_last_ids(last_ids)
+            time.sleep(1)
+    except Exception as e:
+        print(f"[Thingiverse Error] {e}")
 
-scraper = cloudscraper.create_scraper( browser={"browser": "firefox", "platform": "linux", "desktop": True} ) TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# ───────── RSS مصدر عام ─────────
+def fetch_rss_source(source_name, url, last_ids):
+    try:
+        feed = feedparser.parse(url)
+        for entry in feed.entries:
+            entry_id = entry.get("id", entry.link)
+            if last_ids.get(source_name) == entry_id:
+                break
+            title = entry.title
+            link = entry.link
+            img = entry.get("media_thumbnail", [{}])[0].get("url", "")
+            send_to_telegram(f"🆕 <b>{title}</b>", img, [[{"text": "🔗 Visit", "url": link}]])
+            last_ids[source_name] = entry_id
+            save_last_ids(last_ids)
+            break
+    except Exception as e:
+        print(f"[{source_name} Error] {e}")
 
-#--- persistent state ---
+# ───────── حلقة التشغيل ─────────
+def loop():
+    last_ids = load_last_ids()
+    sources = [
+        ("thingiverse", lambda: fetch_thingiverse(last_ids)),
+        ("printables", lambda: fetch_rss_source("printables", "https://www.printables.com/model/rss", last_ids)),
+        ("thangs", lambda: fetch_rss_source("thangs", "https://thangs.com/designs/rss", last_ids)),
+        ("cults3d", lambda: fetch_rss_source("cults3d", "https://cults3d.com/en/feed", last_ids)),
+        ("youmagine", lambda: fetch_rss_source("youmagine", "https://www.youmagine.com/designs.rss", last_ids)),
+        ("prusaprinters", lambda: fetch_rss_source("prusaprinters", "https://blog.prusa3d.com/feed/", last_ids))
+    ]
 
-STATE_FILE = "last_ids.pkl" last_ids = { "thingiverse_newest": None, "printables":        None, "makerworld":        None, "cults3d":           None, "myminifactory":     None, "thangs":            None, "pinshape":          None, }
+    while True:
+        for name, func in sources:
+            func()
+        time.sleep(120)
 
-def load_state(): global last_ids if os.path.isfile(STATE_FILE): with open(STATE_FILE, "rb") as f: last_ids = pickle.load(f)
+# ───────── Keep-Alive Server ─────────
+app = Flask(__name__)
 
-def save_state(): with open(STATE_FILE, "wb") as f: pickle.dump(last_ids, f)
+@app.route("/")
+def index():
+    return "✅ Bot is running."
 
-#--- telegram helpers ---
-
-def tg_text(html: str): scraper.post( f"{TG_ROOT}/sendMessage", data={"chat_id": CHAT_ID, "text": html, "parse_mode": "HTML"}, timeout=15, )
-
-def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str): kb = {"inline_keyboard": [[ {"text": "🔗 View", "url": view_url}, {"text": "⬇️ Download", "url": dl_url}, {"text": "📤 Share", "url": f"https://t.me/share/url?url={view_url}"}, ]]} payload = { "chat_id": CHAT_ID, "photo": photo_url, "caption": caption, "reply_markup": json.dumps(kb, ensure_ascii=False), } scraper.post(f"{TG_ROOT}/sendPhoto", data=payload, timeout=20)
-
-#--- Thingiverse (official API) ---
-
-API_ROOT = "https://api.thingiverse.com"
-
-def newest_thingiverse(): if not APP_TOKEN: return [] r = scraper.get(f"{API_ROOT}/newest/things", params={"access_token": APP_TOKEN}, timeout=20) r.raise_for_status() return r.json()
-
-def first_file_id(thing_id: int): r = scraper.get(f"{API_ROOT}/things/{thing_id}/files", params={"access_token": APP_TOKEN}, timeout=20) r.raise_for_status() files = r.json() return files[0]["id"] if isinstance(files, list) and files else None
-
-#--- generic rss fetch (BeautifulSoup xml) ---
-
-def rss_items(url: str): try: r = scraper.get(url, timeout=20) r.raise_for_status() soup = BeautifulSoup(r.text, "xml") return soup.find_all("item") except Exception: return []
-
-#--- site‑specific fetchers ---
-
-def items_printables(): return rss_items("https://www.printables.com/rss")
-
-def items_makerworld(): return rss_items("https://makerworld.com/feed")
-
-def items_cults(): return rss_items("https://cults3d.com/en/feed")
-
-simple html scrapers for sites without rss
-
-def items_myminifactory(): url = "https://www.myminifactory.com/search/?query=&sort=newest" r = scraper.get(url, timeout=20) soup = BeautifulSoup(r.text, "html.parser") data = [] for a in soup.select("a[href^='/object/']")[:40]: title = a.get("title") or a.get_text(strip=True) link = "https://www.myminifactory.com" + a["href"] data.append({"title": title, "link": link}) return data
-
-def items_thangs(): url = "https://thangs.com/discover" r = scraper.get(url, timeout=20) soup = BeautifulSoup(r.text, "html.parser") data = [] for a in soup.select("a[href^='/model/']")[:40]: title = a.get_text(strip=True) link = "https://thangs.com" + a["href"] data.append({"title": title, "link": link}) return data
-
-def items_pinshape(): url = "https://pinshape.com/discover?sort=newest" r = scraper.get(url, timeout=20) soup = BeautifulSoup(r.text, "html.parser") data = [] for a in soup.select("a[href^='/items/']")[:40]: title = a.get_text(strip=True) link = "https://pinshape.com" + a["href"] data.append({"title": title, "link": link}) return data
-
-#--- main loop ---
-
-def worker(): load_state() while True: try: # Thingiverse for thing in newest_thingiverse(): if thing["id"] == last_ids.get("thingiverse_newest"): break title = thing.get("name", "Thing") url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing['id']}" thumb = thing.get("thumbnail") or thing.get("preview_image") or "" file_id = first_file_id(thing["id"]) dl_url = f"https://www.thingiverse.com/download:{file_id}" if file_id else url tg_photo(thumb, f"📦 <b>[Thingiverse]</b> {title}", url, dl_url) if newest_thingiverse(): last_ids["thingiverse_newest"] = newest_thingiverse()[0]["id"] save_state()
-
-# RSS sources
-        for name, fetch, icon in [
-            ("printables", items_printables, "🖨️"),
-            ("makerworld", items_makerworld, "🔧"),
-            ("cults3d", items_cults, "🎨"),
-        ]:
-            items = fetch()
-            if not items:
-                continue
-            links = [i.link.text.strip() for i in items]
-            if last_ids.get(name) in links:
-                idx = links.index(last_ids[name])
-                links = links[:idx]
-            for link in reversed(links):
-                title = next(i.title.text.strip() for i in items if i.link.text.strip() == link)
-                tg_text(f"{icon} <b>[{name.capitalize()}]</b> <a href=\"{link}\">{title}</a>")
-            if links:
-                last_ids[name] = links[0]
-                save_state()
-
-        # Scraped sources
-        for name, fetch, icon in [
-            ("myminifactory", items_myminifactory, "🛠️"),
-            ("thangs",        items_thangs,        "🔎"),
-            ("pinshape",      items_pinshape,      "📐"),
-        ]:
-            items = fetch()
-            if not items:
-                continue
-            links = [i["link"] for i in items]
-            if last_ids.get(name) in links:
-                idx = links.index(last_ids[name])
-                links = links[:idx]
-            for link in reversed(links):
-                title = next(d["title"] for d in items if d["link"] == link)
-                tg_text(f"{icon} <b>[{name.capitalize()}]</b> <a href=\"{link}\">{title}</a>")
-            if links:
-                last_ids[name] = links[0]
-                save_state()
-
-    except Exception:
-        traceback.print_exc(limit=1)
-
-    time.sleep(120)
-
-#--- start threads ---
-
-if name == "main": Thread(target=worker, daemon=True).start() if SELF_URL: Thread(target=keep_alive, daemon=True).start() app.run(host="0.0.0.0", port=PORT)
-
+# ───────── بدء التشغيل ─────────
+if __name__ == "__main__":
+    Thread(target=loop).start()
+    app.run(host="0.0.0.0", port=10000)
+"""
+print(code)
