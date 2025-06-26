@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
+# -*- coding: utf-8 -*-
+# Main bot file: monitors several 3D-model repositories and pushes new items to Telegram
 
-Main bot file: monitors several 3D‑model repositories and pushes new items to Telegram
-
+import os
+import time
 import os import time import json import pickle import traceback from threading import Thread
 
 import requests import cloudscraper from bs4 import BeautifulSoup from flask import Flask
