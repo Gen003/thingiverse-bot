@@ -9,13 +9,14 @@
 """
 
 import os, time, json, traceback, requests, xml.etree.ElementTree as ET
-from threading import Thread
+from threading import Thread, Lock
 import cloudscraper
 from flask import Flask
 import sqlite3
 import logging
+import random
 
-#───── متغيّرات البيئة ─────
+───── متغيّرات البيئة ─────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
@@ -31,6 +32,11 @@ logging.basicConfig(
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
+
+#────ـ قفل للتحكم في معدل الإرسال ─────
+
+send_lock = Lock()
+last_send_time = 0
 
 #───── Flask ─────
 
@@ -49,7 +55,7 @@ def keep_alive():
             logger.info("Self-ping successful")
         except Exception as e:
             logger.error(f"Self-ping failed: {str(e)}")
-        time.sleep(240)
+        time.sleep(300)
 
 #────ـ Telegram & Scraper ─────
 
@@ -59,6 +65,30 @@ scraper = cloudscraper.create_scraper(
     interpreter='nodejs',
 )
 TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+def safe_send_message(payload, is_photo=False):
+    global last_send_time
+    endpoint = "/sendPhoto" if is_photo else "/sendMessage"
+    
+    with send_lock:
+        # التحكم في معدل الإرسال (رسالة كل 1.5-3 ثوان)
+        elapsed = time.time() - last_send_time
+        if elapsed < 1.5:
+            wait_time = 1.5 + random.uniform(0, 1.5) - elapsed
+            logger.info(f"Rate limiting: Waiting {wait_time:.2f}s")
+            time.sleep(wait_time)
+        
+        try:
+            response = scraper.post(f"{TG_ROOT}{endpoint}", data=payload, timeout=30)
+            response.raise_for_status()
+            last_send_time = time.time()
+            return True
+        except Exception as e:
+            logger.error(f"Failed to send message: {str(e)}")
+            if "Too Many Requests" in str(e):
+                # إذا كان الخطأ 429، ننتظر فترة أطول
+                time.sleep(10)
+            return False
 
 def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
     kb = {"inline_keyboard": [
@@ -74,24 +104,20 @@ def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
         "reply_markup": json.dumps(kb, ensure_ascii=False),
         "parse_mode": "HTML"
     }
-    try:
-        response = scraper.post(f"{TG_ROOT}/sendPhoto", data=payload, timeout=25)
-        response.raise_for_status()
+    success = safe_send_message(payload, is_photo=True)
+    if success:
         logger.info(f"Sent photo: {caption[:50]}...")
-    except Exception as e:
-        logger.error(f"Failed to send photo: {str(e)}")
 
 def tg_text(txt: str):
-    try:
-        response = scraper.post(
-            f"{TG_ROOT}/sendMessage",
-            data={"chat_id": CHAT_ID, "text": txt, "parse_mode": "HTML"},
-            timeout=15
-        )
-        response.raise_for_status()
+    payload = {
+        "chat_id": CHAT_ID,
+        "text": txt,
+        "parse_mode": "HTML",
+        "disable_web_page_preview": True
+    }
+    success = safe_send_message(payload)
+    if success:
         logger.info(f"Sent text: {txt[:50]}...")
-    except Exception as e:
-        logger.error(f"Failed to send text: {str(e)}")
 
 #────ـ تخزين الحالة ─────
 
@@ -145,7 +171,7 @@ def newest_thingiverse():
 def first_file_id(thing_id: int):
     try:
         url = f"{API_ROOT}/things/{thing_id}/files"
-        r = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=25)
+        r = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=30)
         r.raise_for_status()
         files = r.json()
         return files[0]["id"] if isinstance(files, list) and files else None
@@ -159,7 +185,7 @@ def fetch_printables_items():
     try:
         # الرابط الصحيح الحالي لـ Printables
         url = "https://www.printables.com/sitemap.xml?format=rss"
-        r = scraper.get(url, timeout=25)
+        r = scraper.get(url, timeout=30)
         r.raise_for_status()
         root = ET.fromstring(r.text)
         return root.findall("./channel/item")
@@ -173,7 +199,7 @@ def fetch_makerworld_items():
     try:
         # الرابط الصحيح الحالي لـ MakerWorld
         url = "https://makerworld.com/sitemap.xml?format=rss"
-        r = scraper.get(url, timeout=25)
+        r = scraper.get(url, timeout=30)
         r.raise_for_status()
         root = ET.fromstring(r.text)
         return root.findall("./channel/item")
@@ -181,11 +207,15 @@ def fetch_makerworld_items():
         logger.error(f"MakerWorld RSS error: {str(e)}")
         return []
 
-#────ـ العامل الرئيسي مع إصلاحات المصادر الأخرى ─────
+#────ـ العامل الرئيسي مع تحكم بمعدل الإرسال ─────
 
 def worker():
     init_db()
     logger.info("Worker started")
+    
+    # تهيئة معدل الإرسال
+    global last_send_time
+    last_send_time = time.time() - 2  # السماح بالإرسال الفوري
     
     while True:
         try:
@@ -203,7 +233,8 @@ def worker():
                     
                     if new_items:
                         logger.info(f"Found {len(new_items)} new Thingiverse items")
-                        for thing in reversed(new_items):
+                        # إرسال من الأقدم للأحدث لتجنب التحميل الزائد
+                        for thing in new_items:
                             title   = thing.get("name", "Thing")
                             pub_url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing['id']}"
                             thumb   = thing.get("thumbnail") or thing.get("preview_image") or ""
@@ -216,6 +247,7 @@ def worker():
                 error_msg = f"❌ خطأ في Thingiverse: {str(e)}"
                 logger.error(error_msg)
                 tg_text(error_msg[:4000])
+                time.sleep(5)
             
             # Printables
             try:
@@ -232,7 +264,8 @@ def worker():
                     
                     if new_items:
                         logger.info(f"Found {len(new_items)} new Printables items")
-                        for item in reversed(new_items):
+                        # إرسال من الأقدم للأحدث
+                        for item in new_items:
                             title = item.find("title").text
                             link  = item.find("link").text
                             tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{link}\">{title}</a>")
@@ -242,6 +275,7 @@ def worker():
                 error_msg = f"❌ خطأ في Printables: {str(e)}"
                 logger.error(error_msg)
                 tg_text(error_msg[:4000])
+                time.sleep(5)
             
             # MakerWorld
             try:
@@ -258,7 +292,8 @@ def worker():
                     
                     if new_items:
                         logger.info(f"Found {len(new_items)} new MakerWorld items")
-                        for item in reversed(new_items):
+                        # إرسال من الأقدم للأحدث
+                        for item in new_items:
                             title = item.find("title").text
                             link  = item.find("link").text
                             tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{link}\">{title}</a>")
@@ -268,15 +303,16 @@ def worker():
                 error_msg = f"❌ خطأ في MakerWorld: {str(e)}"
                 logger.error(error_msg)
                 tg_text(error_msg[:4000])
+                time.sleep(5)
         
         except Exception as e:
             error_msg = f"❌ خطأ غير متوقع: {str(e)}"
             logger.error(error_msg)
             tg_text(error_msg[:4000])
-            time.sleep(60)
+            time.sleep(30)
         
         logger.info("Cycle completed. Sleeping...")
-        time.sleep(180)  # فحص كل 3 دقائق
+        time.sleep(180 + random.randint(0, 60))  # فحص كل 3-4 دقائق بشكل عشوائي
 
 #────ـ تشغيل مقدّس ─────
 
