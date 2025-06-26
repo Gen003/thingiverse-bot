@@ -1,8 +1,16 @@
 #!/usr/bin/env python3
 
-import os import time import json import traceback import pickle from threading import Thread
+import os
+import time
+import json
+import traceback
+import pickle
+from threading import Thread
 
-import cloudscraper import requests from bs4 import BeautifulSoup from flask import Flask
+import cloudscraper
+import requests
+from bs4 import BeautifulSoup
+from flask import Flask
 
 Telegram credentials and Thingiverse API token
 
