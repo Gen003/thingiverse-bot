@@ -141,7 +141,7 @@ async def main():
         await check_thingiverse(sent_links)
         await check_makerworld(sent_links)
         
-        wait_time = 60
+        wait_time = 120
         print(f"\n... اكتمل الفحص الدوري، في وضع الاستعداد لمدة {int(wait_time / 60)} دقيقة ...")
         await asyncio.sleep(wait_time)
 
