@@ -2,19 +2,19 @@
 
 """ Thingiverse → Telegram  ❚  د. إيرك 2025
 يرسل كل نموذج جديد فور رفعه من المنصات التالية:
-- Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
-- Printables.com (من خلال واجهة برمجة التطبيقات)
-- MakerWorld.com (من خلال واجهة برمجة التطبيقات)
+- Thingiverse (API)
+- Printables.com (Web Scraping)
+- MakerWorld.com (Web Scraping)
 """
 
-import os, time, json, traceback, requests
+import os, time, json, traceback
 from threading import Thread, Lock
-import cloudscraper
 from flask import Flask
 import sqlite3
 import logging
 import random
-import datetime
+from bs4 import BeautifulSoup
+import cloudscraper
 
 # ------ متغيّرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -46,31 +46,35 @@ SELF_URL = "https://thingiverse-bot.onrender.com"
 def keep_alive():
     while True:
         try:
-            requests.get(SELF_URL, timeout=10)
+            scraper.get(SELF_URL, timeout=10)
             logger.info("Self-ping successful")
         except Exception as e:
             logger.error(f"Self-ping failed: {str(e)}")
         time.sleep(300)
 
 # ------ تهيئة السكرابر ------
-def create_scraper():
-    return cloudscraper.create_scraper(
-        browser={
-            'browser': 'chrome',
-            'platform': 'linux',
-            'desktop': True
-        },
-        delay=10
-    )
-
-scraper = create_scraper()
+scraper = cloudscraper.create_scraper(
+    browser={
+        'browser': 'chrome',
+        'platform': 'windows',
+        'desktop': True
+    },
+    delay=10
+)
 TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
 # إعادة تهيئة السكرابر دورياً
 def reset_scraper():
     global scraper
     logger.info("Resetting scraper instance...")
-    scraper = create_scraper()
+    scraper = cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'windows',
+            'desktop': True
+        },
+        delay=10
+    )
 
 # ------ إرسال آمن إلى Telegram ------
 def safe_send_message(payload, is_photo=False):
@@ -164,43 +168,32 @@ def set_last_id(source, last_id):
         logger.error(f"DB set error: {str(e)}")
 
 # ------ طلبات متينة مع إعادة المحاولة ------
-def robust_request(url, method='GET', params=None, headers=None, max_retries=3):
+def robust_request(url, method='GET', headers=None, max_retries=3):
     retry_delays = [5, 15, 30]
     
     for attempt in range(max_retries):
         try:
             final_headers = headers or {
-                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0',
-                'Accept': 'application/json',
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+                'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+                'Accept-Language': 'en-US,en;q=0.5',
                 'Connection': 'keep-alive'
             }
             
             logger.info(f"Request attempt {attempt+1} to {url}")
             
             if method == 'GET':
-                response = scraper.get(url, params=params, headers=final_headers, timeout=30)
+                response = scraper.get(url, headers=final_headers, timeout=30)
             else:
-                response = scraper.post(url, data=params, headers=final_headers, timeout=30)
+                response = scraper.post(url, headers=final_headers, timeout=30)
             
             response.raise_for_status()
             return response
         
-        except (requests.exceptions.ConnectionError, 
-                requests.exceptions.Timeout,
-                requests.exceptions.ChunkedEncodingError) as e:
-            
+        except Exception as e:
             delay = retry_delays[attempt] if attempt < len(retry_delays) else 30
             logger.warning(f"Connection error, retrying in {delay}s: {str(e)}")
             time.sleep(delay)
-            
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:
-                delay = 60
-                logger.warning(f"Rate limited (429), retrying in {delay}s")
-                time.sleep(delay)
-            else:
-                logger.error(f"HTTP error {e.response.status_code}: {str(e)}")
-                return None
     
     logger.error(f"Failed after {max_retries} attempts for {url}")
     return None
@@ -212,7 +205,7 @@ def newest_thingiverse():
     try:
         url = f"{API_ROOT}/newest/things"
         params = {"access_token": APP_TOKEN}
-        response = robust_request(url, params=params)
+        response = robust_request(url, headers=params)
         return response.json() if response else []
     except Exception as e:
         logger.error(f"Thingiverse API error: {str(e)}")
@@ -222,7 +215,7 @@ def first_file_id(thing_id: int):
     try:
         url = f"{API_ROOT}/things/{thing_id}/files"
         params = {"access_token": APP_TOKEN}
-        response = robust_request(url, params=params)
+        response = robust_request(url, headers=params)
         if not response:
             return None
             
@@ -232,84 +225,68 @@ def first_file_id(thing_id: int):
         logger.error(f"Thingiverse files error: {str(e)}")
         return None
 
-# ------ Printables.com API ------
-def fetch_printables_items():
+# ------ Printables.com Web Scraping ------
+def scrape_printables_latest():
     try:
-        url = "https://api.printables.com/graphql/"
-        headers = {
-            'Content-Type': 'application/json',
-            'Origin': 'https://www.printables.com',
-            'Referer': 'https://www.printables.com/'
-        }
-        
-        # استعلام GraphQL للحصول على أحدث النماذج
-        payload = {
-            "query": """
-            query {
-                newestModels(first: 20) {
-                    edges {
-                        node {
-                            id
-                            name
-                            slug
-                            thumbnailUrl
-                            createdAt
-                        }
-                    }
-                }
-            }
-            """
-        }
-        
-        response = robust_request(url, method='POST', headers=headers, params=json.dumps(payload))
+        url = "https://www.printables.com/model?ordering=newest"
+        response = robust_request(url)
         if not response:
             return []
-            
-        data = response.json()
-        models = data.get('data', {}).get('newestModels', {}).get('edges', [])
         
+        soup = BeautifulSoup(response.text, 'html.parser')
         items = []
-        for model in models:
-            node = model.get('node', {})
-            if node:
+        
+        # استخراج أحدث النماذج
+        for card in soup.select('div[data-test-id="model-card"]'):
+            try:
+                title = card.select_one('h3[data-test-id="model-card-name"]').text.strip()
+                model_id = card.select_one('a')['href'].split('/')[-1]
+                link = f"https://www.printables.com/model/{model_id}"
+                
                 items.append({
-                    'id': node.get('id'),
-                    'title': node.get('name'),
-                    'link': f"https://www.printables.com/model/{node.get('id')}-{node.get('slug')}",
-                    'thumbnail': node.get('thumbnailUrl'),
-                    'created_at': node.get('createdAt')
+                    'id': model_id,
+                    'title': title,
+                    'link': link
                 })
+            except Exception as e:
+                logger.warning(f"Error parsing Printables card: {str(e)}")
+                continue
+        
         return items
     except Exception as e:
-        logger.error(f"Printables API error: {str(e)}")
+        logger.error(f"Printables scraping error: {str(e)}")
         return []
 
-# ------ MakerWorld.com API ------
-def fetch_makerworld_items():
+# ------ MakerWorld.com Web Scraping ------
+def scrape_makerworld_latest():
     try:
-        url = "https://makerworld.com/api/v1/makers/hot?page=1&limit=20"
-        headers = {
-            'Accept': 'application/json',
-            'X-App': 'makerworld-web'
-        }
-        
-        response = robust_request(url, headers=headers)
+        url = "https://makerworld.com/en/3d-models?orderBy=newUploads&designCreateSince=7"
+        response = robust_request(url)
         if not response:
             return []
-            
-        data = response.json()
+        
+        soup = BeautifulSoup(response.text, 'html.parser')
         items = []
-        for item in data.get('data', []):
-            items.append({
-                'id': item.get('id'),
-                'title': item.get('name'),
-                'link': f"https://makerworld.com/models/{item.get('id')}",
-                'thumbnail': item.get('cover', {}).get('url'),
-                'created_at': item.get('created_at')
-            })
+        
+        # استخراج أحدث النماذج
+        for card in soup.select('div.model-item'):
+            try:
+                title = card.select_one('.model-name').text.strip()
+                model_id = card.select_one('a')['href'].split('/')[-1]
+                link = f"https://makerworld.com/models/{model_id}"
+                
+                items.append({
+                    'id': model_id,
+                    'title': title,
+                    'link': link
+                })
+            except Exception as e:
+                logger.warning(f"Error parsing MakerWorld card: {str(e)}")
+                continue
+        
         return items
     except Exception as e:
-        logger.error(f"MakerWorld API error: {str(e)}")
+        logger.error(f"MakerWorld scraping error: {str(e)}")
         return []
 
 # ------ العامل الرئيسي ------
@@ -323,7 +300,7 @@ def worker():
     
     while True:
         try:
-            # Thingiverse
+            # Thingiverse (يبقى كما هو)
             try:
                 last_thingiverse = get_last_id("thingiverse_newest")
                 things = newest_thingiverse()
@@ -356,10 +333,10 @@ def worker():
             # الانتظار قبل المصدر التالي
             time.sleep(15 + random.randint(0, 10))
             
-            # Printables
+            # Printables (Web Scraping)
             try:
                 last_printables = get_last_id("printables")
-                items = fetch_printables_items()
+                items = scrape_printables_latest()
                 
                 if items:
                     new_items = []
@@ -384,10 +361,10 @@ def worker():
             # الانتظار قبل المصدر التالي
             time.sleep(15 + random.randint(0, 10))
             
-            # MakerWorld
+            # MakerWorld (Web Scraping)
             try:
                 last_makerworld = get_last_id("makerworld")
-                items = fetch_makerworld_items()
+                items = scrape_makerworld_latest()
                 
                 if items:
                     new_items = []
