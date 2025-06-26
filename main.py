@@ -5,6 +5,8 @@ import asyncio
 import os
 import sys
 import logging
+import random
+import time
 
 # --- إعدادات السجلات (Logging) ---
 logging.basicConfig(
@@ -44,6 +46,29 @@ def save_sent_link(link):
             f.write(link + '\n')
     except Exception as e:
         logger.error(f"خطأ في حفظ الرابط: {e}")
+
+# --- دالة إنشاء رؤوس عشوائية ---
+def get_random_headers():
+    user_agents = [
+        'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.3',
+        'Mozilla/5.0 (Macintosh; Intel Mac OS X 14_5) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.1',
+        'Mozilla/5.0 (X11; Linux x86_64; rv:126.0) Gecko/20100101 Firefox/126.0',
+        'Mozilla/5.0 (Windows NT 10.0; rv:126.0) Gecko/20100101 Firefox/126.0',
+        'Mozilla/5.0 (iPhone; CPU iPhone OS 17_5 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Mobile/15E148 Safari/604.1'
+    ]
+    return {
+        'User-Agent': random.choice(user_agents),
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Accept-Encoding': 'gzip, deflate, br',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Sec-Fetch-Dest': 'document',
+        'Sec-Fetch-Mode': 'navigate',
+        'Sec-Fetch-Site': 'none',
+        'Sec-Fetch-User': '?1',
+        'DNT': '1'
+    }
 
 # --- دالة الإرسال غير المتزامنة ---
 async def send_to_telegram(title, link, image_url):
@@ -86,7 +111,11 @@ async def check_printables(sent_links):
     logger.info("جارٍ فحص Printables...")
     try:
         url = 'https://www.printables.com/model'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = get_random_headers()
+        
+        # إضافة تأخير عشوائي قبل الطلب
+        await asyncio.sleep(random.uniform(1.0, 3.0))
+        
         response = requests.get(url, headers=headers, timeout=25)
         response.raise_for_status()
         
@@ -112,7 +141,7 @@ async def check_printables(sent_links):
                 if await send_to_telegram(title, full_link, image_url):
                     sent_links.add(full_link)
                     save_sent_link(full_link)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
                     
             except Exception as e:
                 logger.error(f"خطأ في معالجة النموذج: {e}")
@@ -124,8 +153,20 @@ async def check_thingiverse(sent_links):
     logger.info("جارٍ فحص Thingiverse...")
     try:
         url = 'https://www.thingiverse.com/newest'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = get_random_headers()
+        
+        # إضافة تأخير عشوائي قبل الطلب
+        await asyncio.sleep(random.uniform(1.0, 3.0))
+        
         response = requests.get(url, headers=headers, timeout=25)
+        
+        # معالجة حالة 403 بشكل خاص
+        if response.status_code == 403:
+            logger.warning("تم حظر الوصول إلى Thingiverse. جارٍ المحاولة مع رؤوس بديلة...")
+            headers = get_random_headers()
+            headers['Referer'] = 'https://www.google.com/'
+            response = requests.get(url, headers=headers, timeout=25)
+            
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'lxml')
@@ -148,7 +189,7 @@ async def check_thingiverse(sent_links):
                 if await send_to_telegram(title, full_link, image_url):
                     sent_links.add(full_link)
                     save_sent_link(full_link)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
                     
             except Exception as e:
                 logger.error(f"خطأ في معالجة النموذج: {e}")
@@ -160,8 +201,20 @@ async def check_makerworld(sent_links):
     logger.info("جارٍ فحص MakerWorld...")
     try:
         url = 'https://makerworld.com/en/models'
-        headers = {'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/91.0.4472.124 Safari/537.36'}
+        headers = get_random_headers()
+        
+        # إضافة تأخير عشوائي قبل الطلب
+        await asyncio.sleep(random.uniform(1.0, 3.0))
+        
         response = requests.get(url, headers=headers, timeout=25)
+        
+        # معالجة حالة 403 بشكل خاص
+        if response.status_code == 403:
+            logger.warning("تم حظر الوصول إلى MakerWorld. جارٍ المحاولة مع رؤوس بديلة...")
+            headers = get_random_headers()
+            headers['Referer'] = 'https://www.google.com/'
+            response = requests.get(url, headers=headers, timeout=25)
+            
         response.raise_for_status()
         
         soup = BeautifulSoup(response.content, 'lxml')
@@ -185,7 +238,7 @@ async def check_makerworld(sent_links):
                 if await send_to_telegram(title, full_link, image_url):
                     sent_links.add(full_link)
                     save_sent_link(full_link)
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(random.uniform(1.0, 3.0))
                     
             except Exception as e:
                 logger.error(f"خطأ في معالجة النموذج: {e}")
@@ -209,11 +262,14 @@ async def main():
     logger.info(f"تم تحميل {len(sent_links)} رابط مرسل سابقاً")
 
     while True:
-        await asyncio.gather(
-            check_printables(sent_links),
-            check_thingiverse(sent_links),
-            check_makerworld(sent_links)
-        )
+        # تشغيل فحص المواقع بشكل متسلسل مع فواصل زمنية
+        await check_printables(sent_links)
+        await asyncio.sleep(random.uniform(2.0, 5.0))
+        
+        await check_thingiverse(sent_links)
+        await asyncio.sleep(random.uniform(2.0, 5.0))
+        
+        await check_makerworld(sent_links)
         
         interval = 300  # 5 دقائق
         logger.info(f"تم الانتهاء من الدورة - الانتظار {interval//60} دقائق")
