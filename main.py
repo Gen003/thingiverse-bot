@@ -2,9 +2,9 @@
 
 """ Thingiverse → Telegram  ❚  د. إيرك 2025
 يرسل كل نموذج جديد فور رفعه من المنصات التالية:
-- Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
-- Printables.com (جميع العناصر الجديدة من RSS)
-- MakerWorld.com (جميع العناصر الجديدة من RSS)
+#- Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
+#- Printables.com (جميع العناصر الجديدة من RSS)
+#- MakerWorld.com (جميع العناصر الجديدة من RSS)
 مع الحفاظ على الاستقرار دون تغييرات كبيرة.
 """
 
@@ -14,7 +14,7 @@ import cloudscraper
 from flask import Flask
 import sqlite3  # <-- إضافة مهمة لتخزين الحالة
 
-───── متغيّرات البيئة ─────
+#───── متغيّرات البيئة ─────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
@@ -23,14 +23,14 @@ APP_TOKEN = os.getenv("APP_TOKEN")
 assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), \
 "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN يجب تعيينها!"
 
-───── Flask ─────
+#───── Flask ─────
 
 app = Flask(__name__)
 @app.route("/")
 def index():
     return "✅ Thingiverse-Bot is running."
 
-───── Self Ping للحفاظ على الحياة ─────
+#───── Self Ping للحفاظ على الحياة ─────
 
 SELF_URL = "https://thingiverse-bot.onrender.com"
 def keep_alive():
@@ -41,7 +41,7 @@ def keep_alive():
             pass
         time.sleep(240)
 
-───── Telegram & Scraper ─────
+#───── Telegram & Scraper ─────
 
 scraper = cloudscraper.create_scraper(
     browser={"browser": "firefox", "platform": "linux", "desktop": True}
@@ -70,7 +70,7 @@ def tg_text(txt: str):
         timeout=10
     )
 
-────ـ تخزين الحالة ─────
+#────ـ تخزين الحالة ─────
 
 def init_db():
     conn = sqlite3.connect('state.db')
@@ -96,7 +96,7 @@ def set_last_id(source, last_id):
     conn.commit()
     conn.close()
 
-────ـ Thingiverse API ─────
+#────ـ Thingiverse API ─────
 
 API_ROOT = "https://api.thingiverse.com"
 
@@ -113,7 +113,7 @@ def first_file_id(thing_id: int):
     files = r.json()
     return files[0]["id"] if isinstance(files, list) and files else None
 
-────ـ Printables.com via RSS ─────
+#────ـ Printables.com via RSS ─────
 
 def fetch_printables_items():
     url = "https://www.printables.com/rss"
@@ -122,7 +122,7 @@ def fetch_printables_items():
     root = ET.fromstring(r.text)
     return root.findall("./channel/item")
 
-────ـ MakerWorld.com via RSS ─────
+#────ـ MakerWorld.com via RSS ─────
 
 def fetch_makerworld_items():
     url = "https://makerworld.com/feed"
@@ -131,7 +131,7 @@ def fetch_makerworld_items():
     root = ET.fromstring(r.text)
     return root.findall("./channel/item")
 
-────ـ العامل الرئيسي مع إصلاحات المصادر الأخرى ─────
+#────ـ العامل الرئيسي مع إصلاحات المصادر الأخرى ─────
 
 def worker():
     init_db()  # تهيئة قاعدة البيانات
@@ -204,7 +204,7 @@ def worker():
         
         time.sleep(120)
 
-────ـ تشغيل مقدّس ─────
+#────ـ تشغيل مقدّس ─────
 
 if __name__ == "__main__":
     Thread(target=worker, daemon=True).start()
