@@ -4,7 +4,7 @@
 
 import cloudscraper import requests from flask import Flask from bs4 import BeautifulSoup
 
-───── متغيّرات البيئة ─────
+#───── متغيّرات البيئة ─────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN") CHAT_ID   = os.getenv("CHAT_ID") APP_TOKEN = os.getenv("APP_TOKEN") PORT      = int(os.getenv("PORT", "10000"))
 
