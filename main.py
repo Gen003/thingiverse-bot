@@ -73,14 +73,7 @@ def create_scraper():
         interpreter='nodejs',
         captcha={
             'provider': 'return_response'
-        },
-        # إعدادات الشبكة المتقدمة
-        socket_options=(
-            (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
-            (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 300),
-            (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 60),
-            (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
-        )
+        }
     )
 
 scraper = create_scraper()
@@ -413,4 +406,4 @@ if __name__ == "__main__":
     logger.info("Starting application...")
     Thread(target=worker, daemon=True).start()
     Thread(target=keep_alive, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
+    app.run(host="0.0.0.0", port=int(os.get
