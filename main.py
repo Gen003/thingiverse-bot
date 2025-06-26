@@ -1,8 +1,14 @@
+#!/usr/bin/env python3
+
 -- coding: utf-8 --
 
 """ Thingiverse → Telegram  ❚ د. إيرك 2025 يرسل كل نموذج جديد فور رفعه من المنصات التالية: - Thingiverse (API) - Printables.com (RSS) - MakerWorld.com (RSS) - Cults3D (RSS) - MyMiniFactory (Scraping) - Thangs.com (Scraping) - Pinshape (Scraping) """ import os import time import json import traceback import pickle import xml.etree.ElementTree as ET from threading import Thread
 
 import cloudscraper import requests from flask import Flask from bs4 import BeautifulSoup
+
+(الباقي من الكود يبقى كما هو دون تعديل)
+
+
 
 #───── متغيّرات البيئة ─────
 
