@@ -1,5 +1,5 @@
 feedparser
-python-telegram-bot>=20
+python-telegram-bot
 beautifulsoup4
 requests
 cloudscraper
