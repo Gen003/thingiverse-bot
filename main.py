@@ -3,20 +3,18 @@
 """ Thingiverse → Telegram  ❚  د. إيرك 2025
 يرسل كل نموذج جديد فور رفعه من المنصات التالية:
 - Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
-- Printables.com (جميع العناصر الجديدة من RSS)
-- MakerWorld.com (جميع العناصر الجديدة من RSS)
-مع الحفاظ على الاستقرار دون تغييرات كبيرة.
+- Printables.com (من خلال واجهة برمجة التطبيقات)
+- MakerWorld.com (من خلال واجهة برمجة التطبيقات)
 """
 
-import os, time, json, traceback, requests, xml.etree.ElementTree as ET
+import os, time, json, traceback, requests
 from threading import Thread, Lock
 import cloudscraper
 from flask import Flask
 import sqlite3
 import logging
 import random
-import socket
-import http.client
+import datetime
 
 # ------ متغيّرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -54,26 +52,21 @@ def keep_alive():
             logger.error(f"Self-ping failed: {str(e)}")
         time.sleep(300)
 
-# ------ تهيئة السكرابر مع إعدادات متقدمة ------
+# ------ تهيئة السكرابر ------
 def create_scraper():
     return cloudscraper.create_scraper(
         browser={
             'browser': 'chrome',
             'platform': 'linux',
-            'desktop': True,
-            'mobile': False
+            'desktop': True
         },
-        delay=15,
-        interpreter='nodejs',
-        captcha={
-            'provider': 'return_response'
-        }
+        delay=10
     )
 
 scraper = create_scraper()
 TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# إعادة تهيئة السكرابر دورياً لتجنب مشاكل الاتصال
+# إعادة تهيئة السكرابر دورياً
 def reset_scraper():
     global scraper
     logger.info("Resetting scraper instance...")
@@ -171,46 +164,38 @@ def set_last_id(source, last_id):
         logger.error(f"DB set error: {str(e)}")
 
 # ------ طلبات متينة مع إعادة المحاولة ------
-def robust_request(url, method='GET', params=None, headers=None, max_retries=4, is_xml=False):
-    """طلب مع إعادة محاولة ذكية وتجاوز الأخطاء الشبكية"""
-    retry_delays = [5, 15, 30, 60]  # تأخير متزايد للإعادة
+def robust_request(url, method='GET', params=None, headers=None, max_retries=3):
+    retry_delays = [5, 15, 30]
     
     for attempt in range(max_retries):
         try:
-            # إعادة تهيئة السكرابر بعد المحاولة الثانية
-            if attempt >= 2:
-                reset_scraper()
-            
-            # إضافة رؤوس افتراضية إذا لم يتم توفيرها
             final_headers = headers or {
                 'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0',
-                'Accept': 'application/xml' if is_xml else 'application/json',
+                'Accept': 'application/json',
                 'Connection': 'keep-alive'
             }
             
             logger.info(f"Request attempt {attempt+1} to {url}")
             
             if method == 'GET':
-                response = scraper.get(url, params=params, headers=final_headers, timeout=45)
+                response = scraper.get(url, params=params, headers=final_headers, timeout=30)
             else:
-                response = scraper.post(url, data=params, headers=final_headers, timeout=45)
+                response = scraper.post(url, data=params, headers=final_headers, timeout=30)
             
             response.raise_for_status()
             return response
         
         except (requests.exceptions.ConnectionError, 
                 requests.exceptions.Timeout,
-                http.client.RemoteDisconnected,
-                socket.gaierror,
-                ConnectionResetError) as e:
+                requests.exceptions.ChunkedEncodingError) as e:
             
-            delay = retry_delays[attempt] if attempt < len(retry_delays) else 60
-            logger.warning(f"Connection error ({type(e).__name__}), retrying in {delay}s: {str(e)}")
+            delay = retry_delays[attempt] if attempt < len(retry_delays) else 30
+            logger.warning(f"Connection error, retrying in {delay}s: {str(e)}")
             time.sleep(delay)
             
         except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 429:  # Too Many Requests
-                delay = 120 if attempt == 0 else 300
+            if e.response.status_code == 429:
+                delay = 60
                 logger.warning(f"Rate limited (429), retrying in {delay}s")
                 time.sleep(delay)
             else:
@@ -247,42 +232,94 @@ def first_file_id(thing_id: int):
         logger.error(f"Thingiverse files error: {str(e)}")
         return None
 
-# ------ Printables.com via RSS ------
+# ------ Printables.com API ------
 def fetch_printables_items():
     try:
-        url = "https://www.printables.com/sitemap.xml?format=rss"
-        response = robust_request(url, is_xml=True)
+        url = "https://api.printables.com/graphql/"
+        headers = {
+            'Content-Type': 'application/json',
+            'Origin': 'https://www.printables.com',
+            'Referer': 'https://www.printables.com/'
+        }
+        
+        # استعلام GraphQL للحصول على أحدث النماذج
+        payload = {
+            "query": """
+            query {
+                newestModels(first: 20) {
+                    edges {
+                        node {
+                            id
+                            name
+                            slug
+                            thumbnailUrl
+                            createdAt
+                        }
+                    }
+                }
+            }
+            """
+        }
+        
+        response = robust_request(url, method='POST', headers=headers, params=json.dumps(payload))
         if not response:
             return []
             
-        root = ET.fromstring(response.text)
-        return root.findall("./channel/item")
+        data = response.json()
+        models = data.get('data', {}).get('newestModels', {}).get('edges', [])
+        
+        items = []
+        for model in models:
+            node = model.get('node', {})
+            if node:
+                items.append({
+                    'id': node.get('id'),
+                    'title': node.get('name'),
+                    'link': f"https://www.printables.com/model/{node.get('id')}-{node.get('slug')}",
+                    'thumbnail': node.get('thumbnailUrl'),
+                    'created_at': node.get('createdAt')
+                })
+        return items
     except Exception as e:
-        logger.error(f"Printables RSS error: {str(e)}")
+        logger.error(f"Printables API error: {str(e)}")
         return []
 
-# ------ MakerWorld.com via RSS ------
+# ------ MakerWorld.com API ------
 def fetch_makerworld_items():
     try:
-        url = "https://makerworld.com/sitemap.xml?format=rss"
-        response = robust_request(url, is_xml=True)
+        url = "https://makerworld.com/api/v1/makers/hot?page=1&limit=20"
+        headers = {
+            'Accept': 'application/json',
+            'X-App': 'makerworld-web'
+        }
+        
+        response = robust_request(url, headers=headers)
         if not response:
             return []
             
-        root = ET.fromstring(response.text)
-        return root.findall("./channel/item")
+        data = response.json()
+        items = []
+        for item in data.get('data', []):
+            items.append({
+                'id': item.get('id'),
+                'title': item.get('name'),
+                'link': f"https://makerworld.com/models/{item.get('id')}",
+                'thumbnail': item.get('cover', {}).get('url'),
+                'created_at': item.get('created_at')
+            })
+        return items
     except Exception as e:
-        logger.error(f"MakerWorld RSS error: {str(e)}")
+        logger.error(f"MakerWorld API error: {str(e)}")
         return []
 
-# ------ العامل الرئيسي مع تحسينات الموثوقية ------
+# ------ العامل الرئيسي ------
 def worker():
     init_db()
     logger.info("Worker started")
     
     # تهيئة معدل الإرسال
     global last_send_time
-    last_send_time = time.time() - 5  # السماح بالإرسال الفوري
+    last_send_time = time.time() - 5
     
     while True:
         try:
@@ -327,20 +364,17 @@ def worker():
                 if items:
                     new_items = []
                     for item in items:
-                        link = item.find("link").text
-                        if link == last_printables:
+                        if item['id'] == last_printables:
                             break
                         new_items.append(item)
                     
                     if new_items:
                         # إرسال أحدث عنصر فقط
                         item = new_items[0]
-                        title = item.find("title").text
-                        link  = item.find("link").text
-                        tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{link}\">{title}</a>")
+                        tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{item['link']}\">{item['title']}</a>")
                         
                         # تحديث آخر معرف
-                        set_last_id("printables", link)
+                        set_last_id("printables", new_items[0]['id'])
                         logger.info(f"Sent 1 new Printables item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في Printables: {str(e)[:300]}"
@@ -358,20 +392,17 @@ def worker():
                 if items:
                     new_items = []
                     for item in items:
-                        link = item.find("link").text
-                        if link == last_makerworld:
+                        if item['id'] == last_makerworld:
                             break
                         new_items.append(item)
                     
                     if new_items:
                         # إرسال أحدث عنصر فقط
                         item = new_items[0]
-                        title = item.find("title").text
-                        link  = item.find("link").text
-                        tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{link}\">{title}</a>")
+                        tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{item['link']}\">{item['title']}</a>")
                         
                         # تحديث آخر معرف
-                        set_last_id("makerworld", link)
+                        set_last_id("makerworld", new_items[0]['id'])
                         logger.info(f"Sent 1 new MakerWorld item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في MakerWorld: {str(e)[:300]}"
@@ -385,9 +416,9 @@ def worker():
             time.sleep(60)
         
         logger.info("Cycle completed. Sleeping...")
-        time.sleep(300 + random.randint(0, 120))  # فحص كل 5-7 دقائق
+        time.sleep(300 + random.randint(0, 120))
 
-# ------ تشغيل مقدّس ------
+# ------ تشغيل التطبيق ------
 if __name__ == "__main__":
     logger.info("Starting application...")
     Thread(target=worker, daemon=True).start()
