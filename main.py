@@ -11,12 +11,6 @@ import sqlite3
 import logging
 import requests
 from bs4 import BeautifulSoup
-from selenium import webdriver
-from selenium.webdriver.chrome.options import Options
-from selenium.webdriver.common.by import By
-from selenium.webdriver.support.ui import WebDriverWait
-from selenium.webdriver.support import expected_conditions as EC
-from webdriver_manager.chrome import ChromeDriverManager
 
 # ------ متغيّرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -53,22 +47,6 @@ def keep_alive():
         except Exception as e:
             logger.error(f"Self-ping failed: {str(e)}")
         time.sleep(300)
-
-# ------ تهيئة متصفح سيلينيوم ------
-def init_driver():
-    chrome_options = Options()
-    chrome_options.add_argument("--headless")
-    chrome_options.add_argument("--no-sandbox")
-    chrome_options.add_argument("--disable-dev-shm-usage")
-    chrome_options.add_argument("--disable-gpu")
-    chrome_options.add_argument("--window-size=1920,1080")
-    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-    
-    driver = webdriver.Chrome(
-        executable_path=ChromeDriverManager().install(),
-        options=chrome_options
-    )
-    return driver
 
 # ------ إرسال آمن إلى Telegram ------
 def safe_send_message(payload, is_photo=False):
@@ -171,41 +149,41 @@ def get_proxy():
     ]
     return {"http": random.choice(proxies), "https": random.choice(proxies)}
 
-# ------ جلب محتوى باستخدام سيلينيوم مع وكيل ------
-def get_content_with_proxy(url, proxy=None):
+# ------ جلب المحتوى باستخدام طلبات HTTP مع وكيل ------
+def fetch_html(url):
+    headers = {
+        'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
+        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/webp,*/*;q=0.8',
+        'Accept-Language': 'en-US,en;q=0.5',
+        'Connection': 'keep-alive',
+        'Upgrade-Insecure-Requests': '1',
+        'Cache-Control': 'max-age=0',
+    }
+    
+    # أولاً: محاولة بدون وكيل
     try:
-        chrome_options = Options()
-        chrome_options.add_argument("--headless")
-        chrome_options.add_argument("--no-sandbox")
-        chrome_options.add_argument("--disable-dev-shm-usage")
-        chrome_options.add_argument("--disable-gpu")
-        chrome_options.add_argument("--window-size=1920,1080")
-        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
-        
-        if proxy:
-            chrome_options.add_argument(f"--proxy-server={proxy}")
-        
-        driver = webdriver.Chrome(
-            executable_path=ChromeDriverManager().install(),
-            options=chrome_options
-        )
-        
-        driver.get(url)
-        WebDriverWait(driver, 30).until(
-            EC.presence_of_element_located((By.TAG_NAME, "body"))
-        )
-        content = driver.page_source
-        driver.quit()
-        return content
+        response = requests.get(url, headers=headers, timeout=15)
+        response.raise_for_status()
+        if response.status_code == 200:
+            return response.text
     except Exception as e:
-        logger.error(f"Selenium error: {str(e)}")
+        logger.warning(f"Direct request failed: {str(e)}")
+    
+    # ثانياً: المحاولة مع وكيل
+    try:
+        proxy = get_proxy()
+        response = requests.get(url, headers=headers, proxies=proxy, timeout=25)
+        response.raise_for_status()
+        return response.text
+    except Exception as e:
+        logger.error(f"Proxy request failed: {str(e)}")
         return None
 
 # ------ Thingiverse (بديل للـ API) ------
 def scrape_thingiverse_latest():
     try:
         url = "https://www.thingiverse.com/newest"
-        content = get_content_with_proxy(url)
+        content = fetch_html(url)
         if not content:
             return []
         
@@ -238,7 +216,7 @@ def scrape_thingiverse_latest():
 def scrape_printables_latest():
     try:
         url = "https://www.printables.com/model/latest"
-        content = get_content_with_proxy(url)
+        content = fetch_html(url)
         if not content:
             return []
         
@@ -269,7 +247,7 @@ def scrape_printables_latest():
 def scrape_makerworld_latest():
     try:
         url = "https://makerworld.com/explore/latest"
-        content = get_content_with_proxy(url)
+        content = fetch_html(url)
         if not content:
             return []
         
