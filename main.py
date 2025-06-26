@@ -2,20 +2,17 @@ import feedparser
 import requests
 from bs4 import BeautifulSoup
 from telegram import Bot
-import time
+import asyncio
 
-# إعداد البوت
-BOT_TOKEN = 'PASTE_YOUR_TOKEN_HERE'
-CHAT_ID = 'PASTE_YOUR_CHAT_ID_HERE'
-bot = Bot(token=BOT_TOKEN)
+BOT_TOKEN = 'PASTE_YOUR_BOT_TOKEN'
+CHAT_ID = 'PASTE_YOUR_CHAT_ID'
+bot = Bot(BOT_TOKEN)
 
-# روابط RSS
 feeds = {
     "Thingiverse": "https://www.thingiverse.com/rss/instances",
     "Printables": "https://rss.stephenslab.top/feed?url=https://www.printables.com/model?ordering=newest"
 }
 
-# تجنب التكرار
 sent_ids = set()
 
 def fetch_makerworld():
@@ -40,10 +37,9 @@ def fetch_rss(name, url):
         items.append({"id": entry_id, "title": title, "link": link})
     return items
 
-def main_loop():
+async def main_loop():
     while True:
         results = []
-
         for name, url in feeds.items():
             try:
                 results.extend(fetch_rss(name, url))
@@ -60,11 +56,11 @@ def main_loop():
                 sent_ids.add(item['id'])
                 msg = f"{item['title']}\n{item['link']}"
                 try:
-                    bot.send_message(chat_id=CHAT_ID, text=msg)
+                    await bot.send_message(chat_id=CHAT_ID, text=msg)
                 except Exception as e:
                     print(f"Telegram error: {e}")
-        
-        time.sleep(300)
+
+        await asyncio.sleep(300)  # كل 5 دقائق
 
 if __name__ == "__main__":
-    main_loop()
+    asyncio.run(main_loop())
