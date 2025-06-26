@@ -1,14 +1,18 @@
-import feedparser import cloudscraper from bs4 import BeautifulSoup from telegram import Bot import asyncio
+import feedparser
+import cloudscraper
+from bs4 import BeautifulSoup
+from telegram import Bot
+import asyncio
 
-إعداد التوكن وID القناة
+
 
 BOT_TOKEN = 'PASTE_YOUR_BOT_TOKEN' CHAT_ID = 'PASTE_YOUR_CHAT_ID' bot = Bot(token=BOT_TOKEN)
 
-روابط RSS
+# RSS
 
 feeds = { "Thingiverse": "https://www.thingiverse.com/rss/instances", "Printables": "https://rss.stephenslab.top/feed?url=https://www.printables.com/model?ordering=newest" }
 
-تجنب التكرار
+#تجنب التكرار
 
 sent_ids = set()
 
@@ -16,15 +20,15 @@ sent_ids = set()
 
 scraper = cloudscraper.create_scraper()
 
-جلب من MakerWorld
+#جلب من MakerWorld
 
 def fetch_makerworld(): url = 'https://makerworld.com/en/models?sort=recent' res = scraper.get(url) soup = BeautifulSoup(res.text, 'html.parser') items = [] for el in soup.select("a.model-card"): title = el.select_one(".title") if not title: continue title = title.get_text(strip=True) link = "https://makerworld.com" + el['href'] item_id = link items.append({"id": item_id, "title": title, "link": link}) return items
 
-جلب من RSS
+#جلب من RSS
 
 def fetch_rss(name, url): parsed = feedparser.parse(url) items = [] for entry in parsed.entries: entry_id = entry.get("id", entry.get("link")) title = entry.get("title", "No Title") link = entry.get("link", "") items.append({"id": entry_id, "title": title, "link": link}) return items
 
-الحلقة الرئيسية
+#الحلقة الرئيسية
 
 async def main_loop(): while True: results = [] for name, url in feeds.items(): try: results.extend(fetch_rss(name, url)) except Exception as e: print(f"Error fetching from {name}: {e}")
 
