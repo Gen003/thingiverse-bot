@@ -14,7 +14,8 @@ BOT_TOKEN = os.getenv("BOT_TOKEN")          # Telegram bot token CHAT_ID   = os.
 
 if not BOT_TOKEN or not CHAT_ID: raise SystemExit("BOT_TOKEN and CHAT_ID must be set")
 
---- flask app for keep‑alive ---
+# --- flask app for keep-alive ---
+
 
 app = Flask(name) @app.route("/") def index(): return "ok"
 
