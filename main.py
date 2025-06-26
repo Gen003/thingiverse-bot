@@ -18,7 +18,7 @@ import random
 import socket
 import http.client
 
-───── متغيّرات البيئة ─────
+#───── متغيّرات البيئة ─────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
