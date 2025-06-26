@@ -15,8 +15,10 @@ from flask import Flask
 import sqlite3
 import logging
 import random
+import socket
+import http.client
 
-#───── متغيّرات البيئة ─────
+───── متغيّرات البيئة ─────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
@@ -51,45 +53,72 @@ SELF_URL = "https://thingiverse-bot.onrender.com"
 def keep_alive():
     while True:
         try:
-            requests.get(SELF_URL)
+            requests.get(SELF_URL, timeout=10)
             logger.info("Self-ping successful")
         except Exception as e:
             logger.error(f"Self-ping failed: {str(e)}")
         time.sleep(300)
 
-#────ـ Telegram & Scraper ─────
+#────ـ تهيئة السكرابر مع إعدادات متقدمة ─────
 
-scraper = cloudscraper.create_scraper(
-    browser={"browser": "firefox", "platform": "linux", "desktop": True},
-    delay=10,
-    interpreter='nodejs',
-)
+def create_scraper():
+    return cloudscraper.create_scraper(
+        browser={
+            'browser': 'chrome',
+            'platform': 'linux',
+            'desktop': True,
+            'mobile': False
+        },
+        delay=15,
+        interpreter='nodejs',
+        captcha={
+            'provider': 'return_response'
+        },
+        # إعدادات الشبكة المتقدمة
+        socket_options=(
+            (socket.SOL_SOCKET, socket.SO_KEEPALIVE, 1),
+            (socket.IPPROTO_TCP, socket.TCP_KEEPIDLE, 300),
+            (socket.IPPROTO_TCP, socket.TCP_KEEPINTVL, 60),
+            (socket.IPPROTO_TCP, socket.TCP_KEEPCNT, 5),
+        )
+    )
+
+scraper = create_scraper()
 TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
+
+# إعادة تهيئة السكرابر دورياً لتجنب مشاكل الاتصال
+def reset_scraper():
+    global scraper
+    logger.info("Resetting scraper instance...")
+    scraper = create_scraper()
+
+#────ـ إرسال آمن إلى Telegram ─────
 
 def safe_send_message(payload, is_photo=False):
     global last_send_time
     endpoint = "/sendPhoto" if is_photo else "/sendMessage"
     
     with send_lock:
-        # التحكم في معدل الإرسال (رسالة كل 3-5 ثوان)
+        # التحكم في معدل الإرسال (رسالة كل 5-8 ثوان)
         elapsed = time.time() - last_send_time
-        if elapsed < 3:
-            wait_time = 3 + random.uniform(0, 2) - elapsed
+        if elapsed < 5:
+            wait_time = 5 + random.uniform(0, 3) - elapsed
             logger.info(f"Rate limiting: Waiting {wait_time:.2f}s")
             time.sleep(wait_time)
         
         try:
-            response = scraper.post(f"{TG_ROOT}{endpoint}", data=payload, timeout=30)
+            response = scraper.post(f"{TG_ROOT}{endpoint}", data=payload, timeout=45)
             response.raise_for_status()
             last_send_time = time.time()
             return True
         except Exception as e:
             logger.error(f"Failed to send message: {str(e)}")
             if "Too Many Requests" in str(e):
-                # إذا كان الخطأ 429، ننتظر فترة أطول
-                wait_time = 30 + random.randint(0, 30)
+                wait_time = 45 + random.randint(0, 30)
                 logger.warning(f"Too Many Requests! Waiting {wait_time}s")
                 time.sleep(wait_time)
+            elif "Connection reset by peer" in str(e):
+                reset_scraper()
             return False
 
 def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
@@ -156,6 +185,57 @@ def set_last_id(source, last_id):
     except Exception as e:
         logger.error(f"DB set error: {str(e)}")
 
+#────ـ طلبات متينة مع إعادة المحاولة ─────
+
+def robust_request(url, method='GET', params=None, headers=None, max_retries=4, is_xml=False):
+    """طلب مع إعادة محاولة ذكية وتجاوز الأخطاء الشبكية"""
+    retry_delays = [5, 15, 30, 60]  # تأخير متزايد للإعادة
+    
+    for attempt in range(max_retries):
+        try:
+            # إعادة تهيئة السكرابر بعد المحاولة الثانية
+            if attempt >= 2:
+                reset_scraper()
+            
+            # إضافة رؤوس افتراضية إذا لم يتم توفيرها
+            final_headers = headers or {
+                'User-Agent': 'Mozilla/5.0 (X11; Linux x86_64; rv:125.0) Gecko/20100101 Firefox/125.0',
+                'Accept': 'application/xml' if is_xml else 'application/json',
+                'Connection': 'keep-alive'
+            }
+            
+            logger.info(f"Request attempt {attempt+1} to {url}")
+            
+            if method == 'GET':
+                response = scraper.get(url, params=params, headers=final_headers, timeout=45)
+            else:
+                response = scraper.post(url, data=params, headers=final_headers, timeout=45)
+            
+            response.raise_for_status()
+            return response
+        
+        except (requests.exceptions.ConnectionError, 
+                requests.exceptions.Timeout,
+                http.client.RemoteDisconnected,
+                socket.gaierror,
+                ConnectionResetError) as e:
+            
+            delay = retry_delays[attempt] if attempt < len(retry_delays) else 60
+            logger.warning(f"Connection error ({type(e).__name__}), retrying in {delay}s: {str(e)}")
+            time.sleep(delay)
+            
+        except requests.exceptions.HTTPError as e:
+            if e.response.status_code == 429:  # Too Many Requests
+                delay = 120 if attempt == 0 else 300
+                logger.warning(f"Rate limited (429), retrying in {delay}s")
+                time.sleep(delay)
+            else:
+                logger.error(f"HTTP error {e.response.status_code}: {str(e)}")
+                return None
+    
+    logger.error(f"Failed after {max_retries} attempts for {url}")
+    return None
+
 #────ـ Thingiverse API ─────
 
 API_ROOT = "https://api.thingiverse.com"
@@ -163,9 +243,9 @@ API_ROOT = "https://api.thingiverse.com"
 def newest_thingiverse():
     try:
         url = f"{API_ROOT}/newest/things"
-        r = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=30)
-        r.raise_for_status()
-        return r.json()
+        params = {"access_token": APP_TOKEN}
+        response = robust_request(url, params=params)
+        return response.json() if response else []
     except Exception as e:
         logger.error(f"Thingiverse API error: {str(e)}")
         return []
@@ -173,9 +253,12 @@ def newest_thingiverse():
 def first_file_id(thing_id: int):
     try:
         url = f"{API_ROOT}/things/{thing_id}/files"
-        r = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=30)
-        r.raise_for_status()
-        files = r.json()
+        params = {"access_token": APP_TOKEN}
+        response = robust_request(url, params=params)
+        if not response:
+            return None
+            
+        files = response.json()
         return files[0]["id"] if isinstance(files, list) and files else None
     except Exception as e:
         logger.error(f"Thingiverse files error: {str(e)}")
@@ -185,11 +268,12 @@ def first_file_id(thing_id: int):
 
 def fetch_printables_items():
     try:
-        # الرابط الصحيح الحالي لـ Printables
         url = "https://www.printables.com/sitemap.xml?format=rss"
-        r = scraper.get(url, timeout=30)
-        r.raise_for_status()
-        root = ET.fromstring(r.text)
+        response = robust_request(url, is_xml=True)
+        if not response:
+            return []
+            
+        root = ET.fromstring(response.text)
         return root.findall("./channel/item")
     except Exception as e:
         logger.error(f"Printables RSS error: {str(e)}")
@@ -199,17 +283,18 @@ def fetch_printables_items():
 
 def fetch_makerworld_items():
     try:
-        # الرابط الصحيح الحالي لـ MakerWorld
         url = "https://makerworld.com/sitemap.xml?format=rss"
-        r = scraper.get(url, timeout=30)
-        r.raise_for_status()
-        root = ET.fromstring(r.text)
+        response = robust_request(url, is_xml=True)
+        if not response:
+            return []
+            
+        root = ET.fromstring(response.text)
         return root.findall("./channel/item")
     except Exception as e:
         logger.error(f"MakerWorld RSS error: {str(e)}")
         return []
 
-#────ـ العامل الرئيسي مع إرسال عنصر واحد فقط في الدورة ─────
+#────ـ العامل الرئيسي مع تحسينات الموثوقية ─────
 
 def worker():
     init_db()
@@ -217,11 +302,11 @@ def worker():
     
     # تهيئة معدل الإرسال
     global last_send_time
-    last_send_time = time.time() - 3  # السماح بالإرسال الفوري
+    last_send_time = time.time() - 5  # السماح بالإرسال الفوري
     
     while True:
         try:
-            # Thingiverse - عنصر واحد فقط
+            # Thingiverse
             try:
                 last_thingiverse = get_last_id("thingiverse_newest")
                 things = newest_thingiverse()
@@ -234,8 +319,8 @@ def worker():
                         new_items.append(thing)
                     
                     if new_items:
-                        # إرسال أقدم عنصر جديد فقط (واحد فقط)
-                        thing = new_items[-1]  # أقدم عنصر
+                        # إرسال أحدث عنصر فقط
+                        thing = new_items[0]
                         title   = thing.get("name", "Thing")
                         pub_url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing['id']}"
                         thumb   = thing.get("thumbnail") or thing.get("preview_image") or ""
@@ -243,18 +328,18 @@ def worker():
                         dl_url  = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
                         tg_photo(thumb, f"📦 <b>[Thingiverse]</b> {title}", pub_url, dl_url)
                         
-                        # تحديث آخر معرف للأحدث
-                        set_last_id("thingiverse_newest", str(things[0]["id"]))
+                        # تحديث آخر معرف
+                        set_last_id("thingiverse_newest", str(thing["id"]))
                         logger.info(f"Sent 1 new Thingiverse item. {len(new_items)-1} remaining")
             except Exception as e:
-                error_msg = f"❌ خطأ في Thingiverse: {str(e)}"
+                error_msg = f"❌ خطأ في Thingiverse: {str(e)[:300]}"
                 logger.error(error_msg)
-                time.sleep(5)
+                time.sleep(10)
             
             # الانتظار قبل المصدر التالي
-            time.sleep(10 + random.randint(0, 10))
+            time.sleep(15 + random.randint(0, 10))
             
-            # Printables - عنصر واحد فقط
+            # Printables
             try:
                 last_printables = get_last_id("printables")
                 items = fetch_printables_items()
@@ -268,24 +353,24 @@ def worker():
                         new_items.append(item)
                     
                     if new_items:
-                        # إرسال أقدم عنصر جديد فقط (واحد فقط)
-                        item = new_items[-1]  # أقدم عنصر
+                        # إرسال أحدث عنصر فقط
+                        item = new_items[0]
                         title = item.find("title").text
                         link  = item.find("link").text
                         tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{link}\">{title}</a>")
                         
-                        # تحديث آخر معرف للأحدث
-                        set_last_id("printables", new_items[0].find("link").text)
+                        # تحديث آخر معرف
+                        set_last_id("printables", link)
                         logger.info(f"Sent 1 new Printables item. {len(new_items)-1} remaining")
             except Exception as e:
-                error_msg = f"❌ خطأ في Printables: {str(e)}"
+                error_msg = f"❌ خطأ في Printables: {str(e)[:300]}"
                 logger.error(error_msg)
-                time.sleep(5)
+                time.sleep(10)
             
             # الانتظار قبل المصدر التالي
-            time.sleep(10 + random.randint(0, 10))
+            time.sleep(15 + random.randint(0, 10))
             
-            # MakerWorld - عنصر واحد فقط
+            # MakerWorld
             try:
                 last_makerworld = get_last_id("makerworld")
                 items = fetch_makerworld_items()
@@ -299,27 +384,28 @@ def worker():
                         new_items.append(item)
                     
                     if new_items:
-                        # إرسال أقدم عنصر جديد فقط (واحد فقط)
-                        item = new_items[-1]  # أقدم عنصر
+                        # إرسال أحدث عنصر فقط
+                        item = new_items[0]
                         title = item.find("title").text
                         link  = item.find("link").text
                         tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{link}\">{title}</a>")
                         
-                        # تحديث آخر معرف للأحدث
-                        set_last_id("makerworld", new_items[0].find("link").text)
+                        # تحديث آخر معرف
+                        set_last_id("makerworld", link)
                         logger.info(f"Sent 1 new MakerWorld item. {len(new_items)-1} remaining")
             except Exception as e:
-                error_msg = f"❌ خطأ في MakerWorld: {str(e)}"
+                error_msg = f"❌ خطأ في MakerWorld: {str(e)[:300]}"
                 logger.error(error_msg)
-                time.sleep(5)
+                time.sleep(10)
         
         except Exception as e:
-            error_msg = f"❌ خطأ غير متوقع: {str(e)}"
+            error_msg = f"❌ خطأ غير متوقع: {str(e)[:300]}"
             logger.error(error_msg)
-            time.sleep(30)
+            reset_scraper()
+            time.sleep(60)
         
         logger.info("Cycle completed. Sleeping...")
-        time.sleep(300 + random.randint(0, 120))  # فحص كل 5-7 دقائق بشكل عشوائي
+        time.sleep(300 + random.randint(0, 120))  # فحص كل 5-7 دقائق
 
 #────ـ تشغيل مقدّس ─────
 
