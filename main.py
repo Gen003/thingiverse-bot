@@ -2,9 +2,9 @@
 
 """ Thingiverse → Telegram  ❚  د. إيرك 2025
 يرسل كل نموذج جديد فور رفعه من المنصات التالية:
-#- Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
-#- Printables.com (جميع العناصر الجديدة من RSS)
-#- MakerWorld.com (جميع العناصر الجديدة من RSS)
+- Thingiverse (جميع النماذج الجديدة منذ آخر فحص)
+- Printables.com (جميع العناصر الجديدة من RSS)
+- MakerWorld.com (جميع العناصر الجديدة من RSS)
 مع الحفاظ على الاستقرار دون تغييرات كبيرة.
 """
 
@@ -18,8 +18,7 @@ import random
 import socket
 import http.client
 
-#───── متغيّرات البيئة ─────
-
+# ------ متغيّرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
 APP_TOKEN = os.getenv("APP_TOKEN")
@@ -27,28 +26,24 @@ APP_TOKEN = os.getenv("APP_TOKEN")
 assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), \
 "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN يجب تعيينها!"
 
-#────ـ تهيئة السجل ─────
-
+# ------ تهيئة السجل ------
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
-#────ـ قفل للتحكم في معدل الإرسال ─────
-
+# ------ قفل للتحكم في معدل الإرسال ------
 send_lock = Lock()
 last_send_time = 0
 
-#───── Flask ─────
-
+# ------ Flask ------
 app = Flask(__name__)
 @app.route("/")
 def index():
     return "✅ Thingiverse-Bot is running."
 
-#───── Self Ping للحفاظ على الحياة ─────
-
+# ------ Self Ping للحفاظ على الحياة ------
 SELF_URL = "https://thingiverse-bot.onrender.com"
 def keep_alive():
     while True:
@@ -59,8 +54,7 @@ def keep_alive():
             logger.error(f"Self-ping failed: {str(e)}")
         time.sleep(300)
 
-#────ـ تهيئة السكرابر مع إعدادات متقدمة ─────
-
+# ------ تهيئة السكرابر مع إعدادات متقدمة ------
 def create_scraper():
     return cloudscraper.create_scraper(
         browser={
@@ -85,8 +79,7 @@ def reset_scraper():
     logger.info("Resetting scraper instance...")
     scraper = create_scraper()
 
-#────ـ إرسال آمن إلى Telegram ─────
-
+# ------ إرسال آمن إلى Telegram ------
 def safe_send_message(payload, is_photo=False):
     global last_send_time
     endpoint = "/sendPhoto" if is_photo else "/sendMessage"
@@ -143,8 +136,7 @@ def tg_text(txt: str):
     if success:
         logger.info(f"Sent text: {txt[:50]}...")
 
-#────ـ تخزين الحالة ─────
-
+# ------ تخزين الحالة ------
 def init_db():
     conn = sqlite3.connect('state.db')
     c = conn.cursor()
@@ -178,8 +170,7 @@ def set_last_id(source, last_id):
     except Exception as e:
         logger.error(f"DB set error: {str(e)}")
 
-#────ـ طلبات متينة مع إعادة المحاولة ─────
-
+# ------ طلبات متينة مع إعادة المحاولة ------
 def robust_request(url, method='GET', params=None, headers=None, max_retries=4, is_xml=False):
     """طلب مع إعادة محاولة ذكية وتجاوز الأخطاء الشبكية"""
     retry_delays = [5, 15, 30, 60]  # تأخير متزايد للإعادة
@@ -229,8 +220,7 @@ def robust_request(url, method='GET', params=None, headers=None, max_retries=4, 
     logger.error(f"Failed after {max_retries} attempts for {url}")
     return None
 
-#────ـ Thingiverse API ─────
-
+# ------ Thingiverse API ------
 API_ROOT = "https://api.thingiverse.com"
 
 def newest_thingiverse():
@@ -257,8 +247,7 @@ def first_file_id(thing_id: int):
         logger.error(f"Thingiverse files error: {str(e)}")
         return None
 
-#────ـ Printables.com via RSS ─────
-
+# ------ Printables.com via RSS ------
 def fetch_printables_items():
     try:
         url = "https://www.printables.com/sitemap.xml?format=rss"
@@ -272,8 +261,7 @@ def fetch_printables_items():
         logger.error(f"Printables RSS error: {str(e)}")
         return []
 
-#────ـ MakerWorld.com via RSS ─────
-
+# ------ MakerWorld.com via RSS ------
 def fetch_makerworld_items():
     try:
         url = "https://makerworld.com/sitemap.xml?format=rss"
@@ -287,8 +275,7 @@ def fetch_makerworld_items():
         logger.error(f"MakerWorld RSS error: {str(e)}")
         return []
 
-#────ـ العامل الرئيسي مع تحسينات الموثوقية ─────
-
+# ------ العامل الرئيسي مع تحسينات الموثوقية ------
 def worker():
     init_db()
     logger.info("Worker started")
@@ -400,10 +387,9 @@ def worker():
         logger.info("Cycle completed. Sleeping...")
         time.sleep(300 + random.randint(0, 120))  # فحص كل 5-7 دقائق
 
-#────ـ تشغيل مقدّس ─────
-
+# ------ تشغيل مقدّس ------
 if __name__ == "__main__":
     logger.info("Starting application...")
     Thread(target=worker, daemon=True).start()
     Thread(target=keep_alive, daemon=True).start()
-    app.run(host="0.0.0.0", port=int(os.get
+    app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
