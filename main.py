@@ -1,20 +1,22 @@
 # -*- coding: utf-8 -*-
 
 """ Thingiverse → Telegram  ❚  د. إيرك 2025
-يرسل كل نموذج جديد فور رفعه من المنصات التالية:
-- Thingiverse (API مع تحسينات المصادقة)
-- Printables.com (واجهة برمجة التطبيقات الرسمية)
-- MakerWorld.com (واجهة برمجة التطبيقات الرسمية)
+نظام متكامل لجلب أحدث النماذج من مصادر متعددة مع تجاوز الحظر
 """
 
-import os, time, json, traceback
+import os, time, json, traceback, random
 from threading import Thread, Lock
 from flask import Flask
 import sqlite3
 import logging
-import random
 import requests
-import cloudscraper
+from bs4 import BeautifulSoup
+from selenium import webdriver
+from selenium.webdriver.chrome.options import Options
+from selenium.webdriver.common.by import By
+from selenium.webdriver.support.ui import WebDriverWait
+from selenium.webdriver.support import expected_conditions as EC
+from webdriver_manager.chrome import ChromeDriverManager
 
 # ------ متغيّرات البيئة ------
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -52,21 +54,27 @@ def keep_alive():
             logger.error(f"Self-ping failed: {str(e)}")
         time.sleep(300)
 
-# ------ تهيئة السكرابر ------
-scraper = cloudscraper.create_scraper(
-    browser={
-        'browser': 'chrome',
-        'platform': 'windows',
-        'desktop': True
-    },
-    delay=10
-)
-TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
+# ------ تهيئة متصفح سيلينيوم ------
+def init_driver():
+    chrome_options = Options()
+    chrome_options.add_argument("--headless")
+    chrome_options.add_argument("--no-sandbox")
+    chrome_options.add_argument("--disable-dev-shm-usage")
+    chrome_options.add_argument("--disable-gpu")
+    chrome_options.add_argument("--window-size=1920,1080")
+    chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
+    
+    driver = webdriver.Chrome(
+        executable_path=ChromeDriverManager().install(),
+        options=chrome_options
+    )
+    return driver
 
 # ------ إرسال آمن إلى Telegram ------
 def safe_send_message(payload, is_photo=False):
     global last_send_time
-    endpoint = "/sendPhoto" if is_photo else "/sendMessage"
+    endpoint = "sendPhoto" if is_photo else "sendMessage"
+    url = f"https://api.telegram.org/bot{BOT_TOKEN}/{endpoint}"
     
     with send_lock:
         # التحكم في معدل الإرسال (رسالة كل 5-8 ثوان)
@@ -77,7 +85,7 @@ def safe_send_message(payload, is_photo=False):
             time.sleep(wait_time)
         
         try:
-            response = scraper.post(f"{TG_ROOT}{endpoint}", data=payload, timeout=45)
+            response = requests.post(url, data=payload, timeout=30)
             response.raise_for_status()
             last_send_time = time.time()
             return True
@@ -152,155 +160,140 @@ def set_last_id(source, last_id):
     except Exception as e:
         logger.error(f"DB set error: {str(e)}")
 
-# ------ طلبات متينة مع إدارة الأخطاء ------
-def robust_request(url, method='GET', params=None, headers=None, max_retries=3):
-    retry_delays = [5, 15, 30]
-    session = requests.Session()
-    
-    for attempt in range(max_retries):
-        try:
-            final_headers = headers or {
-                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36',
-                'Accept': 'application/json',
-            }
-            
-            logger.info(f"Request attempt {attempt+1} to {url}")
-            
-            if method == 'GET':
-                response = session.get(url, params=params, headers=final_headers, timeout=30)
-            else:
-                response = session.post(url, json=params, headers=final_headers, timeout=30)
-            
-            # معالجة خاصة لأخطاء Thingiverse
-            if "thingiverse" in url and response.status_code == 401:
-                logger.warning("Thingiverse token may be expired or invalid")
-                tg_text("⚠️ Thingiverse token may be expired or invalid. Please check APP_TOKEN.")
-                return None
-                
-            response.raise_for_status()
-            return response
-        
-        except requests.exceptions.RequestException as e:
-            delay = retry_delays[attempt] if attempt < len(retry_delays) else 30
-            logger.warning(f"Request error, retrying in {delay}s: {str(e)}")
-            time.sleep(delay)
-    
-    logger.error(f"Failed after {max_retries} attempts for {url}")
-    return None
+# ------ خدمات وكيلة مجانية (يتم تدويرها) ------
+def get_proxy():
+    proxies = [
+        "http://45.94.47.66:8110",
+        "http://193.122.71.184:3128",
+        "http://103.155.54.137:83",
+        "http://47.88.3.19:8080",
+        "http://8.219.97.248:80"
+    ]
+    return {"http": random.choice(proxies), "https": random.choice(proxies)}
 
-# ------ Thingiverse API مع تحسينات المصادقة ------
-def newest_thingiverse():
+# ------ جلب محتوى باستخدام سيلينيوم مع وكيل ------
+def get_content_with_proxy(url, proxy=None):
     try:
-        url = "https://api.thingiverse.com/newest/things"
-        params = {"access_token": APP_TOKEN}
-        response = robust_request(url, params=params)
+        chrome_options = Options()
+        chrome_options.add_argument("--headless")
+        chrome_options.add_argument("--no-sandbox")
+        chrome_options.add_argument("--disable-dev-shm-usage")
+        chrome_options.add_argument("--disable-gpu")
+        chrome_options.add_argument("--window-size=1920,1080")
+        chrome_options.add_argument("user-agent=Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/125.0.0.0 Safari/537.36")
         
-        if not response:
-            return []
-            
-        return response.json()
-    except Exception as e:
-        logger.error(f"Thingiverse API error: {str(e)}")
-        return []
-
-def first_file_id(thing_id: int):
-    try:
-        url = f"https://api.thingiverse.com/things/{thing_id}/files"
-        params = {"access_token": APP_TOKEN}
-        response = robust_request(url, params=params)
+        if proxy:
+            chrome_options.add_argument(f"--proxy-server={proxy}")
         
-        if not response:
-            return None
-            
-        files = response.json()
-        return files[0]["id"] if isinstance(files, list) and files else None
+        driver = webdriver.Chrome(
+            executable_path=ChromeDriverManager().install(),
+            options=chrome_options
+        )
+        
+        driver.get(url)
+        WebDriverWait(driver, 30).until(
+            EC.presence_of_element_located((By.TAG_NAME, "body"))
+        )
+        content = driver.page_source
+        driver.quit()
+        return content
     except Exception as e:
-        logger.error(f"Thingiverse files error: {str(e)}")
+        logger.error(f"Selenium error: {str(e)}")
         return None
 
-# ------ Printables.com API الرسمية ------
-def fetch_printables_items():
+# ------ Thingiverse (بديل للـ API) ------
+def scrape_thingiverse_latest():
     try:
-        url = "https://api.printables.com/graphql"
-        headers = {
-            'Content-Type': 'application/json',
-            'Origin': 'https://www.printables.com',
-            'Referer': 'https://www.printables.com/'
-        }
-        
-        # استعلام GraphQL محدث ومختبر
-        payload = {
-            "query": """
-            query {
-                newestModels(first: 20) {
-                    edges {
-                        node {
-                            id
-                            name
-                            slug
-                            thumbnailUrl
-                            createdAt
-                        }
-                    }
-                }
-            }
-            """
-        }
-        
-        response = robust_request(url, method='POST', headers=headers, params=payload)
-        
-        if not response or response.status_code != 200:
+        url = "https://www.thingiverse.com/newest"
+        content = get_content_with_proxy(url)
+        if not content:
             return []
-            
-        data = response.json()
-        models = data.get('data', {}).get('newestModels', {}).get('edges', [])
         
+        soup = BeautifulSoup(content, 'html.parser')
         items = []
-        for model in models:
-            node = model.get('node', {})
-            if node:
+        
+        for card in soup.select('div.thing-card'):
+            try:
+                thing_id = card.select_one('a')['href'].split(':')[-1]
+                title = card.select_one('h3.name').text.strip()
+                link = f"https://www.thingiverse.com/thing:{thing_id}"
+                thumb = card.select_one('img')['src']
+                
                 items.append({
-                    'id': node.get('id'),
-                    'title': node.get('name'),
-                    'link': f"https://www.printables.com/model/{node.get('id')}-{node.get('slug')}",
-                    'created_at': node.get('createdAt')
+                    'id': thing_id,
+                    'title': title,
+                    'link': link,
+                    'thumb': thumb
                 })
+            except Exception as e:
+                logger.warning(f"Error parsing Thingiverse card: {str(e)}")
+                continue
+        
         return items
     except Exception as e:
-        logger.error(f"Printables API error: {str(e)}")
+        logger.error(f"Thingiverse scraping error: {str(e)}")
         return []
 
-# ------ MakerWorld.com API الرسمية ------
-def fetch_makerworld_items():
+# ------ Printables.com Scraping ------
+def scrape_printables_latest():
     try:
-        url = "https://makerworld.com/api/v1/makers/models"
-        params = {
-            'page': 1,
-            'limit': 20,
-            'orderBy': 'newUploads'
-        }
-        headers = {
-            'Accept': 'application/json',
-            'X-App': 'makerworld-web'
-        }
-        
-        response = robust_request(url, params=params, headers=headers)
-        
-        if not response or response.status_code != 200:
+        url = "https://www.printables.com/model/latest"
+        content = get_content_with_proxy(url)
+        if not content:
             return []
-            
-        data = response.json()
+        
+        soup = BeautifulSoup(content, 'html.parser')
         items = []
-        for item in data.get('data', []):
-            items.append({
-                'id': str(item.get('id')),
-                'title': item.get('name'),
-                'link': f"https://makerworld.com/models/{item.get('id')}",
-                'created_at': item.get('created_at')
-            })
+        
+        for card in soup.select('div[data-test-id="model-card"]'):
+            try:
+                model_id = card.select_one('a')['href'].split('/')[-1]
+                title = card.select_one('h3[data-test-id="model-card-name"]').text.strip()
+                link = f"https://www.printables.com/model/{model_id}"
+                
+                items.append({
+                    'id': model_id,
+                    'title': title,
+                    'link': link
+                })
+            except Exception as e:
+                logger.warning(f"Error parsing Printables card: {str(e)}")
+                continue
+        
         return items
     except Exception as e:
-        logger.error(f"MakerWorld API error: {str(e)}")
+        logger.error(f"Printables scraping error: {str(e)}")
+        return []
+
+# ------ MakerWorld.com Scraping ------
+def scrape_makerworld_latest():
+    try:
+        url = "https://makerworld.com/explore/latest"
+        content = get_content_with_proxy(url)
+        if not content:
+            return []
+        
+        soup = BeautifulSoup(content, 'html.parser')
+        items = []
+        
+        for card in soup.select('div.model-item'):
+            try:
+                model_id = card.select_one('a')['href'].split('/')[-1]
+                title = card.select_one('.model-name').text.strip()
+                link = f"https://makerworld.com/models/{model_id}"
+                
+                items.append({
+                    'id': model_id,
+                    'title': title,
+                    'link': link
+                })
+            except Exception as e:
+                logger.warning(f"Error parsing MakerWorld card: {str(e)}")
+                continue
+        
+        return items
+    except Exception as e:
+        logger.error(f"MakerWorld scraping error: {str(e)}")
         return []
 
 # ------ العامل الرئيسي مع تحسينات كبرى ------
@@ -317,29 +310,28 @@ def worker():
             # Thingiverse
             try:
                 last_thingiverse = get_last_id("thingiverse_newest")
-                things = newest_thingiverse()
+                items = scrape_thingiverse_latest()
                 
-                if things:
+                if items:
                     new_items = []
-                    for thing in things:
-                        if str(thing["id"]) == last_thingiverse:
+                    for item in items:
+                        if item['id'] == last_thingiverse:
                             break
-                        new_items.append(thing)
+                        new_items.append(item)
                     
                     if new_items:
-                        # إرسال أحدث 3 عناصر فقط لتجنب التحميل الزائد
-                        for thing in new_items[:3]:
-                            title   = thing.get("name", "Thing")
-                            pub_url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing['id']}"
-                            thumb   = thing.get("thumbnail") or thing.get("preview_image") or ""
-                            file_id = first_file_id(thing["id"])
-                            dl_url  = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
-                            tg_photo(thumb, f"📦 <b>[Thingiverse]</b> {title}", pub_url, dl_url)
-                            time.sleep(10)  # تأخير بين الإرسال
+                        # إرسال أحدث عنصر
+                        item = new_items[0]
+                        tg_photo(
+                            item['thumb'],
+                            f"📦 <b>[Thingiverse]</b> {item['title']}",
+                            item['link'],
+                            item['link']
+                        )
                         
                         # تحديث آخر معرف
-                        set_last_id("thingiverse_newest", str(new_items[0]["id"]))
-                        logger.info(f"Sent {min(3, len(new_items))} new Thingiverse items")
+                        set_last_id("thingiverse_newest", new_items[0]['id'])
+                        logger.info(f"Sent 1 new Thingiverse item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في Thingiverse: {str(e)[:300]}"
                 logger.error(error_msg)
@@ -351,7 +343,7 @@ def worker():
             # Printables
             try:
                 last_printables = get_last_id("printables")
-                items = fetch_printables_items()
+                items = scrape_printables_latest()
                 
                 if items:
                     new_items = []
@@ -361,14 +353,13 @@ def worker():
                         new_items.append(item)
                     
                     if new_items:
-                        # إرسال أحدث 3 عناصر فقط
-                        for item in new_items[:3]:
-                            tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{item['link']}\">{item['title']}</a>")
-                            time.sleep(10)  # تأخير بين الإرسال
+                        # إرسال أحدث عنصر
+                        item = new_items[0]
+                        tg_text(f"🖨️ <b>[Printables]</b> <a href=\"{item['link']}\">{item['title']}</a>")
                         
                         # تحديث آخر معرف
                         set_last_id("printables", new_items[0]['id'])
-                        logger.info(f"Sent {min(3, len(new_items))} new Printables items")
+                        logger.info(f"Sent 1 new Printables item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في Printables: {str(e)[:300]}"
                 logger.error(error_msg)
@@ -380,7 +371,7 @@ def worker():
             # MakerWorld
             try:
                 last_makerworld = get_last_id("makerworld")
-                items = fetch_makerworld_items()
+                items = scrape_makerworld_latest()
                 
                 if items:
                     new_items = []
@@ -390,14 +381,13 @@ def worker():
                         new_items.append(item)
                     
                     if new_items:
-                        # إرسال أحدث 3 عناصر فقط
-                        for item in new_items[:3]:
-                            tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{item['link']}\">{item['title']}</a>")
-                            time.sleep(10)  # تأخير بين الإرسال
+                        # إرسال أحدث عنصر
+                        item = new_items[0]
+                        tg_text(f"🔧 <b>[MakerWorld]</b> <a href=\"{item['link']}\">{item['title']}</a>")
                         
                         # تحديث آخر معرف
                         set_last_id("makerworld", new_items[0]['id'])
-                        logger.info(f"Sent {min(3, len(new_items))} new MakerWorld items")
+                        logger.info(f"Sent 1 new MakerWorld item. {len(new_items)-1} remaining")
             except Exception as e:
                 error_msg = f"❌ خطأ في MakerWorld: {str(e)[:300]}"
                 logger.error(error_msg)
