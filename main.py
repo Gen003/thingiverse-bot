@@ -1,4 +1,8 @@
-import os, time, json, traceback, requests
+import os
+import time
+import json
+import traceback
+import requests
 from datetime import datetime
 from threading import Thread
 
@@ -14,6 +18,7 @@ assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), "🔴 BOT_TOKEN / CHAT_ID / APP_TOK
 
 # ───── Flask ─────
 app = Flask(__name__)
+
 @app.route("/")
 def index():
     return "✅ Thingiverse-Bot is running."
@@ -23,6 +28,7 @@ scraper = cloudscraper.create_scraper(
     browser={"browser": "firefox", "platform": "linux", "desktop": True}
 )
 TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
+API_ROOT = "https://api.thingiverse.com"
 last_id  = None
 
 def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
@@ -35,25 +41,26 @@ def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
         ]
     }
     payload = {
-        "chat_id": CHAT_ID,
-        "photo":   photo_url,
-        "caption": caption,
-        "reply_markup": json.dumps(kb, ensure_ascii=False)
+        "chat_id":       CHAT_ID,
+        "photo":         photo_url,
+        "caption":       caption,
+        "reply_markup":  json.dumps(kb, ensure_ascii=False)
     }
     scraper.post(f"{TG_ROOT}/sendPhoto", data=payload, timeout=15)
 
 def tg_text(txt: str):
-    scraper.post(f"{TG_ROOT}/sendMessage", data={"chat_id": CHAT_ID, "text": txt}, timeout=10)
-
-API_ROOT = "https://api.thingiverse.com"
+    scraper.post(f"{TG_ROOT}/sendMessage", data={
+        "chat_id": CHAT_ID,
+        "text":    txt
+    }, timeout=10)
 
 def newest_thing():
     url = f"{API_ROOT}/newest/things"
-    r = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=20)
+    r   = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=20)
     r.raise_for_status()
-    data = r.json() if r.headers.get("content-type","").startswith("application/json") else None
-    if not data:
+    if not r.headers.get("content-type","").startswith("application/json"):
         raise ValueError("HTML response (Cloudflare).")
+    data = r.json()
     return data[0] if isinstance(data, list) and data else None
 
 def first_file_id(thing_id: int):
@@ -77,6 +84,7 @@ def worker():
                 dl_url  = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
                 caption = f"📦 {title}"
                 tg_photo(thumb, caption, pub_url, dl_url)
+
         except Exception as e:
             print("⚠️", traceback.format_exc(limit=1))
             tg_text(f"❌ خطأ في جلب التصميمات:\n{e}")
@@ -85,7 +93,18 @@ def worker():
         tg_text(f"🤖 new update coming — {now}")
         time.sleep(120)
 
-if name == "main":
-    Thread(target=worker, daemon=True).start()
+def keep_alive():
+    """دالة بسيطة تبقي التطبيق حيًّا عن طريق طلب دوري إلى المسار الرئيسي."""
+    port = os.getenv("PORT", "10000")
+    url  = f"http://localhost:{port}/"
+    while True:
+        try:
+            requests.get(url, timeout=5)
+        except:
+            pass
+        time.sleep(300)  # كل 5 دقائق
+
+if __name__ == "__main__":
+    Thread(target=worker,     daemon=True).start()
     Thread(target=keep_alive, daemon=True).start()
     app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
