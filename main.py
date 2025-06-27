@@ -13,7 +13,7 @@ APP_TOKEN = os.getenv("APP_TOKEN")
 assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN must be set!"
 
 # ───── Flask ─────
-app = Flask(name)
+app = Flask(__name__)
 @app.route("/")
 def index():
     return "✅ Thingiverse-Bot is running."
