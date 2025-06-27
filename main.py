@@ -13,7 +13,7 @@ from threading import Thread
 import cloudscraper
 from flask import Flask
 
-───── متغيّرات البيئة ─────
+#───── متغيّرات البيئة ─────
 
 BOT_TOKEN = os.getenv("BOT_TOKEN")
 CHAT_ID   = os.getenv("CHAT_ID")
@@ -21,14 +21,14 @@ APP_TOKEN = os.getenv("APP_TOKEN")
 
 assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN must be set!"
 
-───── Flask ─────
+#───── Flask ─────
 
 app = Flask(name)
 @app.route("/")
 def index():
 return "✅ Thingiverse-Bot is running."
 
-───── Self Ping للحفاظ على الحياة ─────
+#───── Self Ping للحفاظ على الحياة ─────
 
 SELF_URL = "https://thingiverse-bot.onrender.com"  # ← تأكد أنه مطابق للرابط الفعلي
 def keep_alive():
@@ -40,7 +40,7 @@ except Exception as e:
 print(f"[❌ Self-Ping Error] {e}")
 time.sleep(240)  # كل 4 دقائق
 
-───── Telegram & Thingiverse ─────
+#───── Telegram & Thingiverse ─────
 
 scraper = cloudscraper.create_scraper(
 browser={"browser": "firefox", "platform": "linux", "desktop": True}
@@ -108,7 +108,7 @@ now = datetime.now().strftime("%H:%M:%S")
     tg_text(f"🤖 new update coming - {now}")  
     time.sleep(120)
 
-───── تشغيل مقدّس ─────
+#───── تشغيل مقدّس ─────
 
 if name == "main":
 Thread(target=worker, daemon=True).start()
