@@ -10,6 +10,7 @@ import re
 import cloudscraper
 from flask import Flask
 from bs4 import BeautifulSoup
+import random
 
 # ───── متغيّرات البيئة ─────
 BOT_TOKEN = os.getenv("BOT_TOKEN")
@@ -32,7 +33,8 @@ def init_db():
     c = conn.cursor()
     c.execute('''CREATE TABLE IF NOT EXISTS processed_things
                  (id INTEGER PRIMARY KEY, 
-                  processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP)''')
+                  processed_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                  source TEXT)''')
     c.execute('''CREATE TABLE IF NOT EXISTS last_check
                  (id INTEGER PRIMARY KEY, 
                   last_id INTEGER)''')
@@ -76,11 +78,11 @@ def is_processed(thing_id):
         conn.close()
         return exists
 
-def mark_processed(thing_id):
+def mark_processed(thing_id, source):
     with db_lock:
         conn = sqlite3.connect(DB_PATH)
         c = conn.cursor()
-        c.execute("INSERT OR IGNORE INTO processed_things (id) VALUES (?)", (thing_id,))
+        c.execute("INSERT OR IGNORE INTO processed_things (id, source) VALUES (?, ?)", (thing_id, source))
         conn.commit()
         conn.close()
 
@@ -107,11 +109,15 @@ def get_thingiverse_files(thing_id):
         print(f"Failed to scrape files: {e}")
         return []
 
-def send_telegram_message(thing):
+def send_telegram_message(thing, source="newest"):
     thing_id = thing["id"]
     title    = thing.get("name", "Thing")
     pub_url  = thing.get("public_url") or f"https://www.thingiverse.com/thing:{thing_id}"
     thumb    = thing.get("thumbnail") or thing.get("preview_image") or ""
+    
+    # إضافة علامة المصدر
+    source_emoji = "🆕" if source == "newest" else "🔥" if source == "popular" else "🔄"
+    title = f"{source_emoji} {title}"
     
     # استخراج الملفات
     files = get_thingiverse_files(thing_id)
@@ -152,9 +158,9 @@ def send_telegram_message(thing):
         }
         scraper.post(f"{TG_ROOT}/sendMessage", data=payload, timeout=15)
 
-def fetch_new_things():
-    """جلب التصاميم الجديدة مع التعامل مع التقييد"""
-    url = f"{API_ROOT}/newest/things"
+def fetch_things(endpoint):
+    """جلب التصاميم من نقطة نهاية محددة مع التعامل مع التقييد"""
+    url = f"{API_ROOT}/{endpoint}"
     params = {"access_token": APP_TOKEN, "per_page": 20}
     
     try:
@@ -163,44 +169,75 @@ def fetch_new_things():
             retry_after = int(response.headers.get('Retry-After', 60))
             print(f"Rate limited. Retrying after {retry_after} seconds")
             time.sleep(retry_after)
-            return fetch_new_things()
+            return fetch_things(endpoint)
         
         response.raise_for_status()
         return response.json() if response.headers.get("content-type","").startswith("application/json") else []
     except Exception as e:
-        print(f"Fetch error: {e}")
+        print(f"Fetch error ({endpoint}): {e}")
         return []
+
+def fetch_alternative_design():
+    """جلب تصميم واحد بديل من مصادر متنوعة"""
+    # مصادر بديلة: المشهور أو المحدث
+    sources = ["popular/things", "recently_updated/things"]
+    random.shuffle(sources)  # اختيار عشوائي للمصدر
+    
+    for source in sources:
+        things = fetch_things(source)
+        if not things:
+            continue
+            
+        # ترتيب عشوائي للنتائج
+        random.shuffle(things)
+        
+        for thing in things:
+            if not is_processed(thing["id"]):
+                return thing, source.split('/')[0]
+    
+    return None, None
 
 def worker():
     while True:
         try:
+            # 1. التحقق من التصاميم الجديدة
             last_id = get_last_id()
-            things = fetch_new_things()
+            new_things = fetch_things("newest/things")
             
-            if not things:
-                time.sleep(60)
-                continue
-                
             new_items = []
-            for thing in things:
-                if thing["id"] == last_id:
-                    break
-                if not is_processed(thing["id"]):
-                    new_items.append(thing)
+            if new_things:
+                for thing in new_things:
+                    if thing["id"] == last_id:
+                        break
+                    if not is_processed(thing["id"]):
+                        new_items.append(thing)
             
-            # معالجة العناصر الجديدة من الأحدث إلى الأقدم
-            for thing in reversed(new_items):
-                try:
-                    send_telegram_message(thing)
-                    mark_processed(thing["id"])
-                    time.sleep(2)  # تجنب القيود
-                except Exception as e:
-                    print(f"Error processing thing {thing['id']}: {e}")
-            
-            # تحديث آخر معرف
-            if things:
-                set_last_id(things[0]["id"])
+            # 2. إرسال جميع التصاميم الجديدة (إن وجدت)
+            if new_items:
+                print(f"📤 Found {len(new_items)} new designs. Sending...")
+                for thing in reversed(new_items):
+                    try:
+                        send_telegram_message(thing, "newest")
+                        mark_processed(thing["id"], "newest")
+                        time.sleep(2)  # تجنب القيود
+                    except Exception as e:
+                        print(f"Error processing thing {thing['id']}: {e}")
                 
+                # تحديث آخر معرف
+                set_last_id(new_things[0]["id"])
+            
+            # 3. إذا لم توجد تصاميم جديدة، إرسال تصميم بديل واحد
+            else:
+                print("🔍 No new designs. Searching for alternative...")
+                alt_design, source_type = fetch_alternative_design()
+                
+                if alt_design:
+                    print(f"📤 Sending alternative design from {source_type}")
+                    send_telegram_message(alt_design, source_type)
+                    mark_processed(alt_design["id"], source_type)
+                else:
+                    print("⚠️ No alternative design found")
+            
         except Exception as e:
             print(f"Worker error: {traceback.format_exc(limit=1)}")
         
