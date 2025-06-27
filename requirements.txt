@@ -3,3 +3,4 @@ python-telegram-bot
 beautifulsoup4
 requests
 cloudscraper
+flask
