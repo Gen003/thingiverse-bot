@@ -1,172 +1,117 @@
-import telegram
-import requests
-import asyncio
-import os
-import sys
-import logging
-from datetime import datetime, timedelta
 
-# --- إعدادات السجلات (Logging) ---
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s',
-    handlers=[
-        logging.StreamHandler(sys.stdout)
-    ]
+-- coding: utf-8 --
+
+"""
+Thingiverse → Telegram  ❚  د. إيرك 2025
+يرسل أحدث تصميم (صورة + زرين View / Download) كل دقيقتين.
+"""
+
+import os, time, json, traceback, requests
+from datetime import datetime
+from threading import Thread
+
+import cloudscraper
+from flask import Flask
+
+#───── متغيّرات البيئة ─────
+
+BOT_TOKEN = os.getenv("BOT_TOKEN")
+CHAT_ID   = os.getenv("CHAT_ID")
+APP_TOKEN = os.getenv("APP_TOKEN")
+
+assert all([BOT_TOKEN, CHAT_ID, APP_TOKEN]), "🔴 BOT_TOKEN / CHAT_ID / APP_TOKEN must be set!"
+
+#───── Flask ─────
+
+app = Flask(name)
+@app.route("/")
+def index():
+return "✅ Thingiverse-Bot is running."
+
+#───── Self Ping للحفاظ على الحياة ─────
+
+SELF_URL = "https://thingiverse-bot.onrender.com"  # ← تأكد أنه مطابق للرابط الفعلي
+def keep_alive():
+while True:
+try:
+requests.get(SELF_URL)
+print("[⏳ Self-Ping] تم إرسال ping لإبقاء السيرفر نشطًا.")
+except Exception as e:
+print(f"[❌ Self-Ping Error] {e}")
+time.sleep(240)  # كل 4 دقائق
+
+#───── Telegram & Thingiverse ─────
+
+scraper = cloudscraper.create_scraper(
+browser={"browser": "firefox", "platform": "linux", "desktop": True}
 )
-logger = logging.getLogger('Thingiverse_Monitor')
+TG_ROOT = f"https://api.telegram.org/bot{BOT_TOKEN}"
 
-# --- الإعدادات وقراءة المتغيرات ---
-BOT_TOKEN = os.environ.get('BOT_TOKEN')
-CHANNEL_ID = os.environ.get('CHANNEL_ID')
-THINGIVERSE_APP_TOKEN = os.environ.get('APP_TOKEN')  # مفتاح API الخاص بـ Thingiverse
+def tg_photo(photo_url: str, caption: str, view_url: str, dl_url: str):
+kb = {
+"inline_keyboard": [
+[
+{"text": "🔗 View on Thingiverse", "url": view_url},
+{"text": "⬇️ Download STL",       "url": dl_url},
+]
+]
+}
+payload = {
+"chat_id": CHAT_ID,
+"photo":   photo_url,
+"caption": caption,
+"reply_markup": json.dumps(kb, ensure_ascii=False)
+}
+scraper.post(f"{TG_ROOT}/sendPhoto", data=payload, timeout=15)
 
-if not BOT_TOKEN or not CHANNEL_ID or not THINGIVERSE_APP_TOKEN:
-    logger.critical("بيانات الاعتماد غير موجودة! تأكد من تعيين BOT_TOKEN, CHANNEL_ID و APP_TOKEN.")
-    sys.exit(1)
+def tg_text(txt: str):
+scraper.post(f"{TG_ROOT}/sendMessage", data={"chat_id": CHAT_ID, "text": txt}, timeout=10)
 
-SENT_LINKS_FILE = 'sent_links.txt'
-bot = telegram.Bot(token=BOT_TOKEN)
+API_ROOT = "https://api.thingiverse.com"
+last_id  = None
 
-# --- دوال مساعدة ---
-def load_sent_links():
-    try:
-        if not os.path.exists(SENT_LINKS_FILE):
-            return set()
-        with open(SENT_LINKS_FILE, 'r', encoding='utf-8') as f:
-            return set(line.strip() for line in f)
-    except Exception as e:
-        logger.error(f"خطأ في تحميل الروابط المرسلة: {e}")
-        return set()
+def newest_thing():
+url = f"{API_ROOT}/newest/things"
+r = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=20)
+r.raise_for_status()
+data = r.json() if r.headers.get("content-type","").startswith("application/json") else None
+if not data:
+raise ValueError("HTML response (Cloudflare).")
+return data[0] if isinstance(data, list) and data else None
 
-def save_sent_link(link):
-    try:
-        with open(SENT_LINKS_FILE, 'a', encoding='utf-8') as f:
-            f.write(link + '\n')
-    except Exception as e:
-        logger.error(f"خطأ في حفظ الرابط: {e}")
+def first_file_id(thing_id: int):
+url = f"{API_ROOT}/things/{thing_id}/files"
+r   = scraper.get(url, params={"access_token": APP_TOKEN}, timeout=20)
+r.raise_for_status()
+files = r.json()
+return files[0]["id"] if isinstance(files, list) and files else None
 
-# --- دالة الإرسال غير المتزامنة ---
-async def send_to_telegram(item):
-    try:
-        # تحضير محتوى الرسالة
-        message = (
-            f"<b>🎯 تصميم جديد على Thingiverse!</b>\n\n"
-            f"<b>🏷️ الاسم:</b> {item['name']}\n"
-            f"<b>👤 المصمم:</b> {item['creator']['name']}\n"
-            f"<b>📅 تاريخ النشر:</b> {item['added']}\n"
-            f"<b>🔗 الرابط:</b> <a href='{item['public_url']}'>اضغط هنا للتحميل</a>"
-        )
-        
-        # البحث عن صورة مناسبة (أول صورة في القائمة)
-        image_url = None
-        for image in item.get('images', []):
-            if image.get('sizes') and image['sizes'][0].get('url'):
-                image_url = image['sizes'][0]['url']
-                break
-        
-        # إرسال الرسالة مع الصورة (أو بدونها)
-        if image_url:
-            await bot.send_photo(
-                chat_id=CHANNEL_ID,
-                photo=image_url,
-                caption=message,
-                parse_mode=telegram.ParseMode.HTML
-            )
-            logger.info(f"تم إرسال النموذج مع الصورة: {item['name']}")
-        else:
-            await bot.send_message(
-                chat_id=CHANNEL_ID,
-                text=message,
-                parse_mode=telegram.ParseMode.HTML
-            )
-            logger.info(f"تم إرسال النموذج بدون صورة: {item['name']}")
-            
-        return True
-        
-    except Exception as e:
-        logger.error(f"فشل إرسال النموذج: {e}")
-        return False
+def worker():
+global last_id
+while True:
+try:
+thing = newest_thing()
+if thing and thing["id"] != last_id:
+last_id = thing["id"]
+title   = thing.get("name", "Thing")
+pub_url = thing.get("public_url") or f"https://www.thingiverse.com/thing:{last_id}"
+thumb   = thing.get("thumbnail") or thing.get("preview_image") or ""
+file_id = first_file_id(last_id)
+dl_url  = f"https://www.thingiverse.com/download:{file_id}" if file_id else pub_url
+caption = f"📦 {title}"
+tg_photo(thumb, caption, pub_url, dl_url)
+except Exception as e:
+print("⚠️", traceback.format_exc(limit=1))
+tg_text(f"❌ خطأ في جلب التصميمات:\n{e}")
 
-# --- دالة جلب التصميمات الجديدة من Thingiverse API ---
-async def fetch_new_models(sent_links):
-    logger.info("جارٍ جلب التصميمات الجديدة من Thingiverse API...")
-    try:
-        # حساب وقت آخر تحديث (آخر 10 دقائق)
-        last_check_time = datetime.utcnow() - timedelta(minutes=10)
-        formatted_time = last_check_time.strftime('%Y-%m-%d %H:%M:%S')
-        
-        # إعداد طلب API
-        url = f'https://api.thingiverse.com/search/?added_after={formatted_time}&type=things&sort=newest&per_page=20'
-        headers = {
-            'Authorization': f'Bearer {THINGIVERSE_APP_TOKEN}',
-            'Accept': 'application/json'
-        }
-        
-        # إرسال الطلب
-        response = requests.get(url, headers=headers, timeout=25)
-        
-        # التحقق من نجاح الطلب
-        if response.status_code != 200:
-            logger.error(f"خطأ في API: {response.status_code} - {response.text}")
-            return []
-        
-        # تحليل النتائج
-        data = response.json()
-        new_items = []
-        
-        for item in data.get('hits', []):
-            # استبعاد التصميمات المرسلة سابقاً
-            if item.get('public_url') and item['public_url'] not in sent_links:
-                new_items.append(item)
-        
-        logger.info(f"تم العثور على {len(new_items)} تصميم جديد")
-        return new_items
-        
-    except Exception as e:
-        logger.error(f"فشل جلب التصميمات: {e}")
-        return []
+now = datetime.now().strftime("%H:%M:%S")  
+    tg_text(f"🤖 new update coming - {now}")  
+    time.sleep(120)
 
-# --- الدورة الرئيسية ---
-async def main():
-    logger.info("--- بدء تشغيل بوت مراقبة Thingiverse ---")
-    
-    try:
-        await bot.send_message(
-            chat_id=CHANNEL_ID,
-            text="🚀 بدأ البوت العمل بنجاح! جاري مراقبة التحديثات على Thingiverse..."
-        )
-    except Exception as e:
-        logger.error(f"فشل إرسال رسالة البدء: {e}")
+#───── تشغيل مقدّس ─────
 
-    sent_links = load_sent_links()
-    logger.info(f"تم تحميل {len(sent_links)} رابط مرسل سابقاً")
+if name == "main":
+Thread(target=worker, daemon=True).start()
+Thread(target=keep_alive, daemon=True).start()
+app.run(host="0.0.0.0", port=int(os.getenv("PORT", "10000")))
 
-    while True:
-        try:
-            # جلب التصميمات الجديدة
-            new_models = await fetch_new_models(sent_links)
-            
-            # إرسال التصميمات الجديدة
-            for model in new_models:
-                if await send_to_telegram(model):
-                    sent_links.add(model['public_url'])
-                    save_sent_link(model['public_url'])
-                    await asyncio.sleep(1)  # فاصل بين الرسائل
-            
-            # الانتظار للدورة القادمة
-            interval = 300  # 5 دقائق
-            logger.info(f"تم الانتهاء من الدورة - الانتظار {interval//60} دقائق")
-            await asyncio.sleep(interval)
-            
-        except Exception as e:
-            logger.error(f"خطأ في الدورة الرئيسية: {e}")
-            await asyncio.sleep(60)  # انتظار قصير قبل إعادة المحاولة
-
-if __name__ == '__main__':
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("تم إيقاف البوت يدويًا")
-    except Exception as e:
-        logger.critical(f"انهيار غير متوقع: {e}")
